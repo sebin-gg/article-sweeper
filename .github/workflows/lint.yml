@@ -1,0 +1,34 @@
+name: lint skill
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - run: python - <<'EOF'
+          import re
+          from pathlib import Path
+
+          root = Path("browser-article-sweeper")
+          text = (root / "SKILL.md").read_text(encoding="utf-8")
+          frontmatter = text.split("---")[1]
+          name = re.search(r"^name:\s*(\S+)", frontmatter, re.M).group(1)
+          assert name == root.name, f"name {name} != folder {root.name}"
+          assert "description:" in frontmatter, "description missing"
+          assert (root / "SKILL.md").stat().st_size > 0
+          for ref in ("references/chromium.md", "references/firefox.md",
+                      "references/dev-mode.md"):
+              assert (root / ref).exists(), f"missing {ref}"
+          for script in ("scripts/list_cdp_tabs.py",
+                         "scripts/cdp_close.py",
+                         "scripts/decode_firefox_session.py"):
+              compile((root / script).read_text(encoding="utf-8"), script, "exec")
+          print("skill lint ok")
+          EOF
