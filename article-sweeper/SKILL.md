@@ -1,10 +1,10 @@
 ---
-name: browser-article-sweeper
+name: article-sweeper
 description: Summarize open article tabs in Thorium, Chromium, Chrome, Brave, Edge, Firefox and other browsers, append summaries to a dated desktop file without overwriting, close only summarized tabs, leave everything else open, restart browser in dev mode. Use when user says summarize open articles, summarize browser tabs, sweep tabs, article summaries, close summarized tabs, open browser in dev mode.
 license: MIT
 allowed-tools: ["Bash", "Read", "Edit", "Write", "Task", "WebFetch", "WebSearch"]
 metadata:
-  version: 1.0.0
+  version: 1.0.1
   tags: ["browser", "tabs", "summarize", "thorium", "chromium", "firefox"]
 ---
 

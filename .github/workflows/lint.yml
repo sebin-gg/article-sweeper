@@ -16,7 +16,7 @@ jobs:
           import re
           from pathlib import Path
 
-          root = Path("browser-article-sweeper")
+          root = Path("article-sweeper")
           text = (root / "SKILL.md").read_text(encoding="utf-8")
           frontmatter = text.split("---")[1]
           name = re.search(r"^name:\s*(\S+)", frontmatter, re.M).group(1)

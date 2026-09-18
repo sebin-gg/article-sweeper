@@ -3,6 +3,13 @@
 All notable changes to this skill follow Keep a Changelog. Versions use
 semver and match `metadata.version` in SKILL.md frontmatter.
 
+## [1.0.1] - 2026-09-18
+
+Changed:
+
+- Renamed the skill from `browser-article-sweeper` to `article-sweeper`.
+  Install with `npx skills add <owner>/article-sweeper@article-sweeper`.
+
 ## [1.0.0] - 2026-09-18
 
 Added:

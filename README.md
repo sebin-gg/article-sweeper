@@ -1,11 +1,11 @@
-# browser-article-sweeper
+# article-sweeper
 
 Use this skill when you have open article tabs to summarize, file, and close.
 
 ## Install
 
 ```bash
-npx skills add <owner>/browser-article-sweeper@browser-article-sweeper
+npx skills add <owner>/article-sweeper@article-sweeper
 ```
 
 Replace `<owner>` with the repo's GitHub owner.
