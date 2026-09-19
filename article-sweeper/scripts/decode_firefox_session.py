@@ -11,6 +11,14 @@ default-release profile.
 import json
 import subprocess
 import sys
+from pathlib import Path
+
+
+def check_path(path):
+    p = Path(path)
+    if not p.is_file():
+        raise SystemExit(f"not a file: {path}")
+    return p
 
 
 def via_package(path):
@@ -25,10 +33,12 @@ def via_package(path):
 
 def via_cli(path):
     tail = subprocess.run(
-        ["tail", "-c", "+9", path], capture_output=True, check=True
+        ["tail", "-c", "+9", path], capture_output=True, check=True,
+        timeout=60,
     )
     raw = subprocess.run(
-        ["lz4cat"], input=tail.stdout, capture_output=True, check=True
+        ["lz4cat"], input=tail.stdout, capture_output=True, check=True,
+        timeout=60,
     ).stdout
     start = raw.find(b'{"version"')
     if start < 0:
@@ -38,6 +48,7 @@ def via_cli(path):
 
 
 def main(path):
+    path = check_path(path)
     try:
         doc = via_package(path)
     except ImportError:

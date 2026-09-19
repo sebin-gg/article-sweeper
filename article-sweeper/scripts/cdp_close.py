@@ -9,17 +9,19 @@ summary to stderr. Exits 0 only when every id closed.
 import argparse
 import concurrent.futures
 import sys
+import urllib.parse
 import urllib.request
+from pathlib import Path
 
 
 def close(port, tab_id):
-    url = f"http://127.0.0.1:{port}/json/close/{tab_id}"
+    url = f"http://127.0.0.1:{port}/json/close/{urllib.parse.quote(tab_id, safe='')}"
     try:
         with urllib.request.urlopen(
             urllib.request.Request(url, method="PUT"), timeout=5
         ) as resp:
             return tab_id, True, resp.read().decode("utf-8", "replace")
-    except Exception as exc:  # noqa: BLE001 - report, do not crash batch
+    except Exception as exc:
         return tab_id, False, str(exc)
 
 
@@ -28,7 +30,12 @@ def main():
     parser.add_argument("ids_file")
     parser.add_argument("--port", default="9222")
     args = parser.parse_args()
-    with open(args.ids_file, encoding="utf-8") as fh:
+    if not args.port.isdigit():
+        raise SystemExit(f"bad port: {args.port}")
+    ids_path = Path(args.ids_file)
+    if not ids_path.is_file():
+        raise SystemExit(f"not a file: {args.ids_file}")
+    with open(ids_path, encoding="utf-8") as fh:
         ids = [line.strip() for line in fh if line.strip()]
     ok = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=20) as pool:

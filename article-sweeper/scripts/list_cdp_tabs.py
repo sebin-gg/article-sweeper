@@ -8,10 +8,14 @@ Prints one line per page tab (skips devtools:// targets):
 """
 import json
 import sys
+from pathlib import Path
 
 
 def main(path):
-    with open(path, encoding="utf-8") as fh:
+    p = Path(path)
+    if not p.is_file():
+        raise SystemExit(f"not a file: {path}")
+    with open(p, encoding="utf-8") as fh:
         data = json.load(fh)
     pages = [
         d for d in data
