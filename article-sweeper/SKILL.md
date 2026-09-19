@@ -12,12 +12,16 @@ metadata:
 
 When invoked:
 
-1. Detect browsers, pick Chromium or Firefox reference.
-2. Enumerate live tabs. Prefer CDP to session files.
-3. Classify each tab: article or leave-open. Dedupe tracking wrappers.
-4. Summarize each unique article. Fixed entry format.
-5. Append entries to today's file. Modify no other files.
-6. Close only summarized tabs. Verify rest stayed open.
+1. Scope browsers: if the user names browsers ("only chrome and
+   firefox", "just thorium"), sweep those only. Otherwise sweep every
+   detected browser. Match names case-insensitively
+   (`chrome` = Chrome, `edge` = Edge, etc.).
+2. Detect browsers, pick Chromium or Firefox reference.
+3. Enumerate live tabs. Prefer CDP to session files.
+4. Classify each tab: article or leave-open. Dedupe tracking wrappers.
+5. Summarize each unique article. Fixed entry format.
+6. Append entries to today's file. Modify no other files.
+7. Close only summarized tabs. Verify rest stayed open.
 
 ## 0. Requirements and portability
 
@@ -34,7 +38,9 @@ Same `summary article YYYY-MM-DD.txt` basename all systems.
 ## 1. Detect browsers
 
 Check binaries first, then read matching reference file. Never assume
-Thorium-only.
+Thorium-only. Only probe and sweep browsers in scope (user-named, else
+all installed). Tabs in out-of-scope browsers stay open and get no
+summary. Header `Source:` lists which browsers were swept.
 
 ```bash
 for b in thorium chromium chromium-browser google-chrome google-chrome-stable brave brave-browser microsoft-edge microsoft-edge-stable vivaldi opera firefox; do

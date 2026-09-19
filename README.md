@@ -31,6 +31,11 @@ Example prompts:
 - "Summarize my open articles"
 - "Sweep my article tabs"
 - "Summarize browser tabs and close the ones you summarized"
+- "Sweep only Chrome and Firefox"
+- "Summarize Thorium tabs, leave everything else open"
+
+Name browsers to scope the sweep. Unnamed browsers stay open and get no
+summary. No names = all detected browsers swept.
 
 ## What it does
 
