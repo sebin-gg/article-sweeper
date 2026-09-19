@@ -81,12 +81,12 @@ entry. Record every duplicate tab id: all of them close later.
 
 ## 4. Summarize
 
-One entry per unique article. Short plain sentences, no filler:
+One entry per unique article. Plain sentences, no filler, summary as long as the article needs:
 
 ```markdown
 ## <Title>
 Link: <clean canonical URL>
-Summary: <3-6 sentences, concrete facts, numbers, names>
+Summary: <concrete facts, numbers, names — whatever length the article needs>
 Takeaway: <one sentence>
 ---
 ```
@@ -111,7 +111,7 @@ Today's file: `~/Desktop/summary article YYYY-MM-DD.txt`
 ```markdown
 # Article summaries - <browser> open tabs
 
-Saved: YYYY-MM-DD. Source: <browser + session/CDP source>. Style: short plain sentences, no filler.
+Saved: YYYY-MM-DD. Source: <browser + session/CDP source>. Style: plain sentences, no filler.
 N article tabs summarised. Non-article tabs left open by rule (...).
 
 Protected / left open (non-articles, not summarised):

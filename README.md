@@ -51,7 +51,7 @@ Example prompts:
 ```markdown
 ## <Title>
 Link: <clean canonical URL>
-Summary: <3-6 sentences, concrete facts, numbers, names>
+Summary: <concrete facts, numbers, names — whatever length the article needs>
 Takeaway: <one sentence>
 ---
 ```
