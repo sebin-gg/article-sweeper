@@ -8,7 +8,7 @@ metadata:
   tags: ["browser", "tabs", "summarize", "thorium", "chromium", "firefox"]
 ---
 
-# Browser Article Sweeper
+# Article Sweeper
 
 When invoked:
 

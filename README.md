@@ -142,4 +142,4 @@ See [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
-[MIT](LICENSE) © 2026 browser-article-sweeper contributors
+[MIT](LICENSE) © 2026 article-sweeper contributors
