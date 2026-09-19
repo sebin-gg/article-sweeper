@@ -108,14 +108,33 @@ Firefox profiles live under `~/.mozilla/firefox/` or
 
 ## FAQ
 
-- **Will it close my mail, chats, or repos?**
-  No. Non-articles are never summarized and never closed.
-- **What if a page blocks direct fetch?**
-  The entry says so honestly (`This summary is search based because the page blocked direct fetch.`) and falls back to WebSearch on the exact title.
-- **Where do summaries go?**
-  `~/Desktop/summary article YYYY-MM-DD.txt` (same basename on Windows: `$USERPROFILE\Desktop\`). One file per day, appended only.
-- **More than ~15 articles?**
-  The skill splits into batches, summarizes in parallel subagents with the same entry format, then concatenates.
+<details>
+<summary><b>Will it close my mail, chats, or repos?</b></summary>
+
+No. Non-articles are never summarized and never closed. Only summarized article tabs close.
+
+</details>
+
+<details>
+<summary><b>What if a page blocks direct fetch?</b></summary>
+
+The entry says so honestly (`This summary is search based because the page blocked direct fetch.`) and falls back to WebSearch on the exact title.
+
+</details>
+
+<details>
+<summary><b>Where do summaries go?</b></summary>
+
+`~/Desktop/summary article YYYY-MM-DD.txt` (same basename on Windows: `$USERPROFILE\Desktop\`). One file per day, appended only — existing files never overwritten.
+
+</details>
+
+<details>
+<summary><b>More than ~15 articles?</b></summary>
+
+The skill splits into batches, summarizes in parallel subagents with the same entry format, then concatenates.
+
+</details>
 
 ## Changelog
 
