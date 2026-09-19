@@ -1,14 +1,27 @@
 # article-sweeper
 
-Use this skill when you have open article tabs to summarize, file, and close.
+<p align="center">
+  <a href="https://github.com/sebin-gg/article-sweeper/actions"><img src="https://github.com/sebin-gg/article-sweeper/actions/workflows/lint.yml/badge.svg" alt="Lint"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License"></a>
+  <a href="https://github.com/sebin-gg/article-sweeper/stargazers"><img src="https://img.shields.io/github/stars/sebin-gg/article-sweeper?style=social" alt="Stars"></a>
+</p>
+
+> **The zero-config tab sweeper for article hoarders.** Summarizes open article tabs across Thorium, Chromium, Chrome, Brave, Edge, Vivaldi, Opera, and Firefox, files them to a dated desktop note, and closes only the summarized tabs.
+
+## Highlights
+
+- **Cross-browser**: Chromium family via CDP ground truth, Firefox via `sessionstore.jsonlz4` decode.
+- **Article-only**: mail, chats, repos, dashboards, trackers, and adult pages stay open, never summarized.
+- **Append-only notes**: entries go to `~/Desktop/summary article YYYY-MM-DD.txt`. Creates when missing, never overwrites.
+- **Safe close**: closes only summarized tab ids, verifies the rest stayed open. Firefox tabs close by hand from a printed list.
+- **Dev-mode restart**: backup first, session-restore check, no `pkill -9`, no session-file deletes.
 
 ## Install
 
 ```bash
-npx skills add <owner>/article-sweeper@article-sweeper
+npx skills add sebin-gg/article-sweeper@article-sweeper
 ```
 
-Replace `<owner>` with the repo's GitHub owner.
 Restart your agent session after install so the skill loads.
 
 ## Use
@@ -32,6 +45,23 @@ Example prompts:
 4. It appends the entries to `~/Desktop/summary article YYYY-MM-DD.txt`. It
    creates the file when missing and never overwrites existing files.
 5. It closes only the summarized tabs and reports what stayed open.
+
+### Example entry
+
+```markdown
+## <Title>
+Link: <clean canonical URL>
+Summary: <3-6 sentences, concrete facts, numbers, names>
+Takeaway: <one sentence>
+---
+```
+
+## Project layout
+
+- `article-sweeper/SKILL.md` — the skill: detect, enumerate, classify, summarize, append, close.
+- `article-sweeper/scripts/` — `list_cdp_tabs.py`, `cdp_close.py`, `decode_firefox_session.py`.
+- `article-sweeper/references/` — `chromium.md`, `firefox.md`, `dev-mode.md` per-browser details.
+- `CHANGELOG.md` — release notes per version.
 
 ## Requirements
 
@@ -59,6 +89,21 @@ Firefox profiles live under `~/.mozilla/firefox/` or
 `~/Library/Application Support/Firefox/Profiles/` on macOS, and
 `%APPDATA%\Mozilla\Firefox\Profiles\` on Windows.
 
+## FAQ
+
+- **Will it close my mail, chats, or repos?**
+  No. Non-articles are never summarized and never closed.
+- **What if a page blocks direct fetch?**
+  The entry says so honestly (`This summary is search based because the page blocked direct fetch.`) and falls back to WebSearch on the exact title.
+- **Where do summaries go?**
+  `~/Desktop/summary article YYYY-MM-DD.txt` (same basename on Windows: `$USERPROFILE\Desktop\`). One file per day, appended only.
+- **More than ~15 articles?**
+  The skill splits into batches, summarizes in parallel subagents with the same entry format, then concatenates.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md).
+
 ## License
 
-MIT. See LICENSE.
+[MIT](LICENSE) © 2026 browser-article-sweeper contributors
