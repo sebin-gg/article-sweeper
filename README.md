@@ -80,6 +80,17 @@ leaves the tabs open.
 
 ## Browsers and paths
 
+| # | Browser | Binaries probed | Profile / session location | Tab source |
+| :---: | :--- | :--- | :--- | :--- |
+| 1 | [Thorium](https://thorium.rocks/) | `thorium` | `~/.config/thorium/Default/` (Linux) | CDP |
+| 2 | [Chromium](https://www.chromium.org/) | `chromium`, `chromium-browser` | `~/.config/chromium/Default/` (Linux) | CDP |
+| 3 | [Chrome](https://www.google.com/chrome/) | `google-chrome`, `google-chrome-stable` | `~/.config/google-chrome/Default/` (Linux) | CDP |
+| 4 | [Brave](https://brave.com/) | `brave`, `brave-browser` | `~/.config/BraveSoftware/Brave-Browser/Default/` (Linux) | CDP |
+| 5 | [Edge](https://www.microsoft.com/edge) | `microsoft-edge`, `microsoft-edge-stable` | `~/.config/microsoft-edge/Default/` (Linux) | CDP |
+| 6 | [Vivaldi](https://vivaldi.com/) | `vivaldi` | `~/.config/vivaldi/Default/` (Linux) | CDP |
+| 7 | [Opera](https://www.opera.com/) | `opera` | `~/.config/opera/Default/` (Linux) | CDP |
+| 8 | [Firefox](https://www.mozilla.org/firefox/) | `firefox` | profiles under `~/.mozilla/firefox/` (Linux) | `sessionstore.jsonlz4` |
+
 Linux stores Chromium profiles under `~/.config/<browser>/Default/`.
 macOS uses `~/Library/Application Support/<browser>/Default/`.
 Windows uses `%LOCALAPPDATA%\<browser>\User Data\Default\`.
@@ -88,6 +99,12 @@ Firefox profiles live under `~/.mozilla/firefox/` or
 `~/.config/mozilla/firefox/` on Linux,
 `~/Library/Application Support/Firefox/Profiles/` on macOS, and
 `%APPDATA%\Mozilla\Firefox\Profiles\` on Windows.
+
+### Vendor references
+
+- [Chrome DevTools Protocol](https://chromedevtools.github.io/devtools-protocol/) — `/json/list` enumeration, `/json/close/<id>` close. Ground truth over session files.
+- [Firefox profiles — where user data is stored](https://support.mozilla.org/en-US/kb/profiles-where-firefox-stores-user-data) — profile layout, `sessionstore.jsonlz4` location.
+- Skill internals: `article-sweeper/references/chromium.md`, `article-sweeper/references/firefox.md`, `article-sweeper/references/dev-mode.md`.
 
 ## FAQ
 
