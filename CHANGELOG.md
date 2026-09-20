@@ -5,7 +5,26 @@ semver and match `metadata.version` in SKILL.md frontmatter.
 
 ## [Unreleased]
 
+Added:
+
+- `list_cdp_tabs.py --check-endpoint` (with `--host`/`--port`): validates
+  `/json/version` identity before enumeration output, so a reused/wrong
+  port cannot lead to summarizing the wrong browser's tabs.
+- `sweep_lib.cdp_url()` / `cdp_host_for_url()`: centralized CDP URL
+  construction with correct IPv6 bracketing (`http://[::1]:port/...`).
+
 Fixed:
+
+- `cdp_close.py` before/after diff now uses the fresh live list taken
+  just before closing as baseline (`--expect` stays the authorization
+  snapshot only); tabs that closed naturally between `--expect` and
+  revalidation no longer misreport as unexpected closures.
+- `copy_session_safe()` failure path deletes any partial scratch copy
+  before raising.
+- Skill frontmatter `allowed-tools` uses the spec's space-separated form;
+  §0.5 notes Browser/Computer Use branches need a host-exposed
+  capability (no standardized tool name exists).
+- Stale test-count docs replaced with "behavioral suite" wording.
 
 - `cdp_close.py`: `--expect` is now required (no blind close-by-id
   path); unverifiable post-close states fail with non-zero exit;
@@ -36,7 +55,7 @@ Added:
   tracking-only param drops, dedupe, classifier baseline, CDP
   validation, close-candidate revalidation, atomic locked append with
   authoritative recount, per-browser endpoint discovery, log redaction.
-- `tests/test_sweep_lib.py`: 31 behavioral tests with mocked CDP and
+- `tests/test_sweep_lib.py`: behavioral suite with mocked CDP and
   Firefox session fixtures; CI runs them on every push/PR.
 - Execution-mode decision (§0.5): local scripts by default; Browser Use
   or Computer Use only on explicit request.

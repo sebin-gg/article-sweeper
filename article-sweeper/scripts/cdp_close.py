@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sweep_lib import (  # noqa: E402
     DEFAULT_HOST,
     TabRecord,
+    cdp_url,
     check_endpoint_identity,
     parse_cdp_list,
     redact_url,
@@ -43,13 +44,14 @@ from sweep_lib import (  # noqa: E402
 
 
 def fetch_list(host, port, timeout=5):
-    url = f"http://{host}:{port}/json/list"
+    url = cdp_url(host, port, "/json/list")  # NOSONAR python:S5332
     with urllib.request.urlopen(url, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8", "replace"))
 
 
 def close_one(host, port, tab_id, timeout=5):
-    url = f"http://{host}:{port}/json/close/{urllib.parse.quote(tab_id, safe='')}"
+    url = cdp_url(host, port,  # NOSONAR python:S5332
+                  f"/json/close/{urllib.parse.quote(tab_id, safe='')}")
     try:
         with urllib.request.urlopen(
             urllib.request.Request(url, method="PUT"), timeout=timeout
@@ -141,10 +143,12 @@ def main(argv=None):
         print("nothing safe to close after revalidation", file=sys.stderr)
         sys.exit(0)
 
-    # Post-close: confirm the close set actually disappeared and nothing
-    # else closed. Unexpected closures => non-zero exit (safety signal).
+    # Post-close: diff FRESH before-close baseline vs final. --expect is
+    # the authorization snapshot (stale by design); `live` is the actual
+    # pre-close state. Unrelated tabs that closed naturally between
+    # --expect and revalidation must not count as unexpected closures.
     from sweep_lib import diff_tab_sets as _diff
-    before_by_id = {t.id: t for t in before}
+    live_by_id = {t.id: t for t in live}
 
     ok = 0
     closed_ids: list[str] = []
@@ -162,7 +166,7 @@ def main(argv=None):
         after_raw = fetch_list(host, port)
         after = parse_cdp_list(after_raw, endpoint=endpoint,
                                browser=args.browser)
-        diff = _diff(list(before_by_id.values()), after, set(closed_ids))
+        diff = _diff(list(live_by_id.values()), after, set(closed_ids))
         if diff["still_open_from_close_set"]:
             print(f"FAILED still open: {diff['still_open_from_close_set'][:5]}",
                   file=sys.stderr)

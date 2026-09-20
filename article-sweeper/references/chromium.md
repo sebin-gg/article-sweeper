@@ -41,8 +41,13 @@ dedicated `--user-data-dir`), the CDP page list is ground truth:
 ```bash
 curl -s http://127.0.0.1:<port>/json/list > $SCRATCH/cdp.json
 python3 scripts/list_cdp_tabs.py $SCRATCH/cdp.json \
-  --endpoint 127.0.0.1:<port> --browser <name> [--redact]
+  --endpoint 127.0.0.1:<port> --browser <name> [--redact] \
+  --host 127.0.0.1 --port <port> --check-endpoint
 ```
+
+`--check-endpoint` validates `/json/version` (and the `--browser`
+product match) before printing, so a reused/wrong local port cannot
+lead to summarizing the wrong browser's tabs.
 
 Filtering is by CDP target `type == "page"` plus internal-scheme exclusion
 (`devtools://`, `chrome://`, `edge://`, `brave://`, `about:`, ...), done in
@@ -72,5 +77,7 @@ re-fetches `/json/list`
 after each close instead of trusting a bare HTTP 200 — unverifiable
 closes fail the run. Recount pages
 afterwards with `sweep_lib.diff_tab_sets()` and confirm zero ids from the
-close set remain. `--port` must satisfy 1–65535; `--host` is loopback-only
-by design.
+close set remain (baseline is the fresh live list taken just before
+closing, not the `--expect` authorization snapshot). `--port` must
+satisfy 1–65535; `--host` is loopback-only
+by design (`sweep_lib.cdp_url()` brackets `::1` correctly).

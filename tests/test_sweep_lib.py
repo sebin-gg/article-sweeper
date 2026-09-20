@@ -13,6 +13,7 @@ from sweep_lib import (  # noqa: E402
     TabRecord,
     atomic_append,
     canonicalize_url,
+    cdp_url,
     check_endpoint_identity,
     classify_url,
     cleanup_session_copy,
@@ -130,6 +131,15 @@ def test_check_endpoint_identity_matches_and_rejects():
         def _boom(h, p):
             raise RuntimeError("down")
         check_endpoint_identity("127.0.0.1", 9224, fetch_version=_boom)
+
+
+def test_cdp_url_brackets_ipv6():
+    assert cdp_url("127.0.0.1", 9222, "/json/list") == \
+        "http://127.0.0.1:9222/json/list"
+    assert cdp_url("::1", 9222, "/json/list") == \
+        "http://[::1]:9222/json/list"
+    assert cdp_url("localhost", "9224", "/json/version") == \
+        "http://127.0.0.1:9224/json/version"
 
 
 # --- classifier --------------------------------------------------------------
@@ -266,6 +276,30 @@ def test_decode_and_copy_safe(tmp_path):
     cleanup_session_copy(dst)
 
 
+def test_copy_failure_leaves_no_scratch(tmp_path, monkeypatch):
+    import io
+    src = tmp_path / "sessionstore.jsonlz4"
+    src.write_bytes(make_session_bytes())
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    calls = {"n": 0}
+
+    real_open = open
+
+    def flaky(path, *a, **k):
+        # alternate bytes on every read of src so stability never holds
+        if str(path) == str(src) and "rb" in (a[0] if a else k.get("mode", "")):
+            calls["n"] += 1
+            return io.BytesIO(b"a" if calls["n"] % 2 else b"b")
+        return real_open(path, *a, **k)
+
+    monkeypatch.setattr("builtins.open", flaky)
+    import sweep_lib
+    with pytest.raises(ValueError):
+        sweep_lib.copy_session_safe(src, scratch, retries=2, settle_ms=0)
+    assert list(scratch.glob("*")) == []
+
+
 def test_copy_stable_and_cleanup(tmp_path):
     src = tmp_path / "sessionstore.jsonlz4"
     src.write_bytes(make_session_bytes())
@@ -287,6 +321,21 @@ def test_session_freshness_backup_newer(tmp_path):
     (bk / "recovery.jsonlz4").write_bytes(b"x")
     info2 = session_freshness(src)
     assert info2["backup_newer"]
+
+
+def test_diff_uses_fresh_baseline_not_stale_expect():
+    # --expect snapshot has extra tab Z that closed naturally before the
+    # fresh live list; diffing live-vs-after must not flag Z unexpected.
+    mk = lambda i: TabRecord(id=i, url=f"https://ex.com/{i}",
+                             title=i, endpoint="e", browser="b")
+    expect = [mk("A"), mk("Z")]
+    live = [mk("A")]
+    after = []
+    d = diff_tab_sets(live, after, {"A"})
+    assert d["unexpectedly_closed"] == []
+    # but diffing stale expect-vs-after WOULD misreport Z:
+    d2 = diff_tab_sets(expect, after, {"A"})
+    assert d2["unexpectedly_closed"] == ["Z"]
 
 
 # --- script CLIs ----------------------------------------------------------------
