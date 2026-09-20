@@ -61,6 +61,17 @@ def validate_host(host: str) -> str:
     return "127.0.0.1" if h == "localhost" else h
 
 
+def cdp_host_for_url(host: str) -> str:
+    """Bracket an IPv6 loopback host for URL construction ([::1])."""
+    h = validate_host(host)
+    return f"[{h}]" if ":" in h and not h.startswith("[") else h
+
+
+def cdp_url(host: str, port, path: str) -> str:
+    """Build a CDP loopback URL with correct IPv6 bracketing."""
+    return f"http://{cdp_host_for_url(host)}:{validate_port(port)}{path}"
+
+
 def find_free_port(exclude: set[int] | None = None) -> int:
     """Return a free loopback TCP port (per-browser endpoint discovery)."""
     exclude = exclude or set()
@@ -491,7 +502,7 @@ def check_endpoint_identity(host: str, port: int, *,
     else:
         # CDP loopback-only by design: validate_host() restricts host to
         # 127.0.0.1/localhost/::1, CDP offers no HTTPS endpoint.
-        url = f"http://{host}:{port}/json/version"  # NOSONAR python:S5332
+        url = cdp_url(host, port, "/json/version")  # NOSONAR python:S5332
         try:
             with _urlreq.urlopen(url, timeout=timeout) as resp:
                 payload = _json.loads(resp.read().decode("utf-8", "replace"))
@@ -661,6 +672,12 @@ def copy_session_safe(src: Path, scratch: Path, *,
         except (OSError, ValueError) as exc:
             last_err = exc
             _time.sleep(settle_ms / 1000.0)
+    # Failure path: never leave a partial/stale scratch copy behind.
+    try:
+        dst.unlink(missing_ok=True)  # NOSONAR pythonsecurity:S8707
+    except TypeError:
+        if dst.exists():
+            dst.unlink()  # NOSONAR pythonsecurity:S8707
     raise ValueError(f"could not get a stable session snapshot of {src}: {last_err}")
 
 

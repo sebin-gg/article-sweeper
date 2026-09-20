@@ -2,7 +2,7 @@
 name: article-sweeper
 description: Summarize open article tabs in Thorium, Chromium, Chrome, Brave, Edge, Firefox and other browsers, append summaries to a dated desktop file without overwriting, close only summarized tabs, leave everything else open, restart browser in dev mode. Use when user says summarize open articles, summarize browser tabs, sweep tabs, article summaries, close summarized tabs, open browser in dev mode.
 license: MIT
-allowed-tools: ["Bash", "Read", "Edit", "Write", "Task", "WebFetch", "WebSearch"]
+allowed-tools: Bash Read Edit Write Task WebFetch WebSearch
 metadata:
   version: 1.1.0
   tags: ["browser", "tabs", "summarize", "thorium", "chromium", "firefox"]
@@ -84,6 +84,13 @@ No explicit request           → Local scripts
 Local scripts remain the default because they are generally more
 token-efficient and deterministic.
 
+> Note: `allowed-tools` above lists host tools this skill may invoke.
+> There is no standardized `BrowserUse`/`ComputerUse` tool name in the
+> Agent Skills spec (`allowed-tools` is an experimental free-form
+> string), so §0.5 branches depend on the host agent exposing a browser
+> / computer capability under its own tool name. Do not claim those
+> branches work on hosts without them.
+
 ## 1. Detect browsers
 
 Check binaries first, then read matching reference file. Never assume
@@ -118,8 +125,14 @@ tabs that are not visible in the debugging instance.
 ```bash
 curl -s http://127.0.0.1:<port>/json/list > $SCRATCH/cdp.json
 python3 scripts/list_cdp_tabs.py $SCRATCH/cdp.json \
-  --endpoint 127.0.0.1:<port> --browser <name> [--redact]
+  --endpoint 127.0.0.1:<port> --browser <name> [--redact] \
+  --host 127.0.0.1 --port <port> --check-endpoint
 ```
+
+`--check-endpoint` validates `/json/version` (and `--browser` match)
+BEFORE enumeration output, so a reused/wrong local port cannot lead to
+summarizing the wrong browser's tabs. Use it whenever the port mapping
+is not freshly established.
 
 Firefox (read-only): `python3 scripts/decode_firefox_session.py
 <session-path>` — the script copies to scratch and decodes the copy by
@@ -215,7 +228,10 @@ and confirms each target disappeared afterwards — unverifiable closes
 (list unreachable) count as FAILED with non-zero exit. Afterwards run
 the before/after set comparison (`sweep_lib.diff_tab_sets()`): zero ids
 from the close set remain, and anything else that closed unexpectedly
-is reported (non-zero exit).
+is reported (non-zero exit). The diff baseline is the fresh live list
+taken just before closing (`--expect` is only the authorization
+snapshot), so tabs that closed naturally between `--expect` and
+revalidation do not count as unexpected closures.
 
 Firefox has no automated close in this flow (read-only enumeration).
 Close summarized Firefox tabs by hand from the printed close list and

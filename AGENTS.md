@@ -23,7 +23,7 @@ Behavioral rules for AI agents working in this repository. Read this before touc
 ## Verify (run before you commit)
 
 ```powershell
-python -m pytest tests/ -q          # 31 behavioral tests (mocked CDP + Firefox fixtures)
+python -m pytest tests/ -q          # behavioral suite (mocked CDP + Firefox fixtures)
 python -m compileall -q article-sweeper/scripts  # all scripts compile cleanly
 python -c "import re; from pathlib import Path; root=Path('article-sweeper'); text=(root/'SKILL.md').read_text(); fm=text.split('---')[1]; name=re.search(r'^name:\s*(\S+)',fm,re.M).group(1); assert name==root.name; v=re.search(r'^\s*version:\s*(\S+)',fm,re.M).group(1); assert '['+v+']' in Path('CHANGELOG.md').read_text()"  # skill lint
 ```
