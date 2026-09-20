@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import socket
 import tempfile
 import urllib.parse
@@ -198,7 +197,14 @@ def dedupe_tabs(tabs: list[dict]) -> dict[str, list[dict]]:
 # ---------------------------------------------------------------------------
 
 def redact_url(url: str) -> str:
-    """Redact sensitive query values for logs/scratch output."""
+    """Redact sensitive values for logs/scratch output.
+
+    Covers query params (SENSITIVE_PARAMS), URL fragment (OAuth-style
+    ``#access_token=...`` leaks), userinfo (``user:pass@host``), and
+    path segments that look like tokens (long hex/base64/jwt-like).
+    Callers must still prefer --redact + scratch cleanup; redaction is
+    best-effort, not a guarantee that a URL is safe to share.
+    """
     try:
         p = urllib.parse.urlparse(url)
         pairs = urllib.parse.parse_qsl(p.query, keep_blank_values=True)
@@ -206,9 +212,47 @@ def redact_url(url: str) -> str:
             (k, "***" if k.lower() in SENSITIVE_PARAMS else v)
             for k, v in pairs
         ]
+        query = urllib.parse.urlencode(red, doseq=True)
+        # Fragment: redact whole fragment when it carries token-like keys
+        # (e.g. #access_token=abc&token_type=bearer).
+        frag = p.fragment
+        if frag:
+            fpairs = urllib.parse.parse_qsl(frag, keep_blank_values=True)
+            if any(k.lower() in SENSITIVE_PARAMS or k.lower() in
+                   ("access_token", "refresh_token") for k, _ in fpairs):
+                frag = "&".join(
+                    f"{k}=***" if k.lower() in SENSITIVE_PARAMS or k.lower()
+                    in ("access_token", "refresh_token") else f"{k}={v}"
+                    for k, v in fpairs) if fpairs else "***"
+            elif len(frag) >= 20 and re.fullmatch(r"[A-Za-z0-9\-_%.~+/=]+", frag):
+                frag = "***"
+        # Userinfo: never log passwords/tokens in user:pass@host.
+        netloc = p.netloc
+        if "@" in netloc:
+            userinfo, _, hostport = netloc.rpartition("@")
+            if ":" in userinfo or userinfo.lower() in SENSITIVE_PARAMS:
+                netloc = "***@" + hostport
+            elif len(userinfo) >= 16:
+                netloc = "***@" + hostport
+        # Path: mask long hex/base64/jwt-looking segments (invite codes,
+        # share tokens) while keeping human-readable slugs.
+        def _mask_seg(seg: str) -> str:
+            if len(seg) >= 24 and re.fullmatch(
+                    r"[A-Za-z0-9\-_+/=]+", seg):
+                # JWT has dots; check separately below. Heuristic: high
+                # entropy + length => likely token.
+                letters = sum(c.isalpha() for c in seg)
+                digits = sum(c.isdigit() for c in seg)
+                if letters >= 8 and (digits >= 4 or "-" in seg or "_" in seg
+                                     or len(seg) >= 32):
+                    return "***"
+            if seg.count(".") == 2 and len(seg) >= 24 and re.fullmatch(
+                    r"[A-Za-z0-9\-_]+(\.[A-Za-z0-9\-_]+){2}", seg):
+                return "***"  # JWT-shaped
+            return seg
+        path = "/".join(_mask_seg(s) for s in p.path.split("/"))
         return urllib.parse.urlunparse(
-            (p.scheme, p.netloc, p.path, p.params,
-             urllib.parse.urlencode(red, doseq=True), p.fragment))
+            (p.scheme, netloc, path, p.params, query, frag))
     except Exception:
         return "<unparseable-url>"
 
@@ -417,50 +461,140 @@ def diff_tab_sets(before: list[TabRecord],
 
 
 # ---------------------------------------------------------------------------
+# CDP endpoint identity
+# ---------------------------------------------------------------------------
+
+def check_endpoint_identity(host: str, port: int, *,
+                            expect_browser: str = "",
+                            fetch_version=None,
+                            timeout: int = 5) -> dict:
+    """Validate a CDP endpoint owns the expected browser before operating.
+
+    Fetches ``/json/version`` and matches ``Browser`` product string against
+    ``expect_browser`` (case-insensitive substring on the product name, e.g.
+    ``chrome``, ``brave``, ``edge``). Returns the version payload dict.
+
+    Raises ValueError on unreachable endpoint / malformed payload /
+    browser mismatch. Callers (cdp_close) must run this before any close
+    so a stray local CDP service on a reused port cannot be driven by
+    mistake.
+    """
+    import urllib.request as _urlreq
+    import json as _json
+    host = validate_host(host)
+    port = validate_port(port)
+    if fetch_version is not None:
+        try:
+            payload = fetch_version(host, port)
+        except Exception as exc:
+            raise ValueError(f"CDP endpoint {host}:{port} unreachable: {exc}")
+    else:
+        url = f"http://{host}:{port}/json/version"
+        try:
+            with _urlreq.urlopen(url, timeout=timeout) as resp:
+                payload = _json.loads(resp.read().decode("utf-8", "replace"))
+        except Exception as exc:
+            raise ValueError(f"CDP endpoint {host}:{port} unreachable: {exc}")
+    if not isinstance(payload, dict):
+        raise ValueError(f"CDP /json/version at {host}:{port} not an object")
+    product = str(payload.get("Browser", "") or "")
+    if expect_browser:
+        want = expect_browser.strip().lower()
+        if want and want not in product.lower():
+            raise ValueError(
+                f"endpoint {host}:{port} reports Browser={product!r}, "
+                f"expected browser containing {expect_browser!r}; refusing")
+    return payload
+
+
+# ---------------------------------------------------------------------------
 # Atomic summary-file append (concurrency-safe)
 # ---------------------------------------------------------------------------
+
+def _lock_exclusive(fd) -> str:
+    """Take an exclusive lock on fd. Returns lock backend name.
+
+    POSIX: fcntl.flock. Windows: msvcrt.locking (1-byte region at
+    offset 0). Raises RuntimeError when neither backend exists.
+    """
+    try:
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        return "fcntl.flock"
+    except ImportError:
+        pass
+    try:
+        import msvcrt
+        # LK_LOCK blocks up to 10s per call; retry for ~30s total.
+        import time as _time
+        deadline = _time.time() + 30
+        while True:
+            try:
+                fd.seek(0)
+                msvcrt.locking(fd.fileno(), msvcrt.LK_LOCK, 1)
+                return "msvcrt.locking"
+            except OSError:
+                if _time.time() >= deadline:
+                    raise
+                _time.sleep(0.05)
+    except ImportError:
+        pass
+    raise RuntimeError("no file-lock backend (need fcntl or msvcrt)")
+
+
+def _unlock_exclusive(fd, backend: str) -> None:
+    try:
+        if backend == "fcntl.flock":
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        elif backend == "msvcrt.locking":
+            import msvcrt
+            try:
+                fd.seek(0)
+                msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+    except Exception:
+        pass
+
 
 def atomic_append(path: Path, lines: list[str]) -> None:
     """Append lines atomically: write-temp-in-same-dir + os.replace for the
     header-create step, then append under an exclusive sidecar lock so
-    parallel subagents cannot interleave ('read -> edit -> count' races)."""
+    parallel subagents cannot interleave ('read -> edit -> count' races).
+
+    Locking is mandatory on all platforms: POSIX uses fcntl.flock,
+    Windows uses msvcrt.locking. No silent no-op fallback.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     lock = path.with_suffix(path.suffix + ".lock")
-    fd = os.open(str(lock), os.O_CREAT | os.O_RDWR, 0o600)
-    try:
-        # best-effort exclusive lock (POSIX flock; no-op on Windows)
+    with open(lock, "a+b") as lockfh:
+        backend = _lock_exclusive(lockfh)
         try:
-            import fcntl
-            fcntl.flock(fd, fcntl.LOCK_EX)
-        except Exception:
-            pass
-        if not path.exists():
-            tmp = tempfile.NamedTemporaryFile(
-                "w", dir=str(path.parent), delete=False, encoding="utf-8")
-            try:
-                tmp.write("".join(lines))
-                tmp.close()
-                os.replace(tmp.name, str(path))
-            except BaseException:
+            if not path.exists():
+                tmp = tempfile.NamedTemporaryFile(
+                    "w", dir=str(path.parent), delete=False, encoding="utf-8")
                 try:
-                    os.unlink(tmp.name)
-                except OSError:
-                    pass
-                raise
-        else:
-            with open(path, "a", encoding="utf-8") as fh:
-                fh.write("".join(lines))
-                fh.flush()
-                try:
-                    os.fsync(fh.fileno())
-                except OSError:
-                    pass
-    finally:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
+                    tmp.write("".join(lines))
+                    tmp.close()
+                    os.replace(tmp.name, str(path))
+                except BaseException:
+                    try:
+                        os.unlink(tmp.name)
+                    except OSError:
+                        pass
+                    raise
+            else:
+                with open(path, "a", encoding="utf-8") as fh:
+                    fh.write("".join(lines))
+                    fh.flush()
+                    try:
+                        os.fsync(fh.fileno())
+                    except OSError:
+                        pass
+        finally:
+            _unlock_exclusive(lockfh, backend)
 
 
 def recount_entries(path: Path) -> int:
@@ -479,20 +613,73 @@ def recount_entries(path: Path) -> int:
 MOZLZ4_MAGIC = b"mozLz40\0"
 
 
-def copy_session_safe(src: Path, scratch: Path) -> Path:
+def copy_session_safe(src: Path, scratch: Path, *,
+                      retries: int = 5, settle_ms: int = 200) -> Path:
     """Copy a live session file to scratch first; never read live in place.
 
-    Enforces the documented 'copy first' invariant in code instead of
-    relying on the agent remembering.
+    Firefox may be writing the source concurrently, so a single
+    shutil.copyfile can tear. Mitigation: copy twice and require
+    identical bytes (stable snapshot); retry until stable or retries
+    run out, then raise. Enforces the documented 'copy first'
+    invariant in code instead of relying on the agent remembering.
+    Callers must delete the returned copy when done (see
+    cleanup_session_copy()).
     """
+    import time as _time
     src = Path(src)
     if not src.is_file():
         raise FileNotFoundError(f"not a file: {src}")
     scratch = Path(scratch)
     scratch.mkdir(parents=True, exist_ok=True)
     dst = scratch / (src.stem + ".copy" + src.suffix)
-    shutil.copyfile(src, dst)
-    return dst
+    last_err: Exception | None = None
+    for _ in range(max(1, retries)):
+        try:
+            with open(src, "rb") as fh:
+                first = fh.read()
+            _time.sleep(settle_ms / 1000.0)
+            with open(src, "rb") as fh:
+                second = fh.read()
+            if first != second:
+                last_err = ValueError("session file changed during copy; retrying")
+                continue
+            with open(dst, "wb") as out:
+                out.write(second)
+                out.flush()
+                try:
+                    os.fsync(out.fileno())
+                except OSError:
+                    pass
+            if dst.read_bytes() != second:
+                last_err = ValueError("scratch copy mismatch; retrying")
+                continue
+            return dst
+        except (OSError, ValueError) as exc:
+            last_err = exc
+            _time.sleep(settle_ms / 1000.0)
+    raise ValueError(f"could not get a stable session snapshot of {src}: {last_err}")
+
+
+def cleanup_session_copy(path: Path) -> None:
+    """Best-effort delete of a scratch session copy (privacy)."""
+    try:
+        p = Path(path)
+        # Only delete inside temp/scratch-looking dirs or *.copy.* names;
+        # never delete an arbitrary path by mistake.
+        name = p.name
+        is_copy = ".copy." in name or name.endswith(".copy")
+        try:
+            is_tmp = tempfile.gettempdir() in str(p.resolve())
+        except OSError:
+            is_tmp = False
+        if is_copy or is_tmp:
+            try:
+                p.unlink(missing_ok=True)
+            except TypeError:
+                if p.exists():
+                    p.unlink()
+    except Exception:
+        pass
 
 
 def decode_mozlz4(raw: bytes) -> dict:

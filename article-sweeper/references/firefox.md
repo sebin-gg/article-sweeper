@@ -28,10 +28,12 @@ Session files:
 ## Decode
 
 The script enforces the safety invariant itself: it **copies the session
-file to scratch/temp and decodes the copy** (unless you pass `--no-copy`
-with a path that already is a copy). Never point it at the live file
-expecting it to copy for you — copying is the default, `--no-copy` is the
-explicit opt-out for pre-made copies.
+file to scratch/temp and decodes the copy** (stable-snapshot retry: two
+identical reads required, else abort) and **deletes the copy at the end
+of the run** (success or decode failure) unless `--keep-copy` is given.
+`--no-copy` is only for inputs that already are copies — the path must
+live under a scratch `opencode/` dir or carry a `.copy.` marker, else
+the script refuses instead of reading a live profile file in place.
 
 ```bash
 python3 scripts/decode_firefox_session.py <profile>/sessionstore.jsonlz4 [--redact]

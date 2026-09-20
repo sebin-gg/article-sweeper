@@ -7,7 +7,8 @@ debugging.
 > active accounts, cookies, and page content to any tooling on the
 > debugging port. Keep the port on loopback only (`127.0.0.1`), never
 > expose it to a network, and delete scratch captures (`$SCRATCH/cdp*.json`,
-> dev logs) at the end of each run. See "Cleanup" below.
+> `$SCRATCH/*.copy.jsonlz4` Firefox session copies, dev logs) at the end
+> of each run. See "Cleanup" below.
 
 ## Chrome 136+ restriction (important)
 
@@ -120,12 +121,15 @@ the remaining page count matches expectation.
 
 ## Cleanup (sensitive scratch)
 
-`cdp.json` captures and dev logs can contain tokens, document ids, and
-invite codes in URLs. At the end of every run — success or abort:
+`cdp.json` captures, Firefox `*.copy.jsonlz4` session copies, and dev
+logs can contain tokens, document ids, invite codes, and full session
+state in URLs. At the end of every run — success or abort
+(`decode_firefox_session.py` deletes its own copy automatically unless
+`--keep-copy` is passed):
 
 ```bash
-shred -u $SCRATCH/cdp.json $SCRATCH/cdp-before.json $SCRATCH/<browser>-dev.log 2>/dev/null \
-  || rm -f $SCRATCH/cdp.json $SCRATCH/cdp-before.json $SCRATCH/<browser>-dev.log
+shred -u $SCRATCH/cdp.json $SCRATCH/cdp-before.json $SCRATCH/*.copy.jsonlz4 $SCRATCH/<browser>-dev.log 2>/dev/null \
+  || rm -f $SCRATCH/cdp.json $SCRATCH/cdp-before.json $SCRATCH/*.copy.jsonlz4 $SCRATCH/<browser>-dev.log
 ```
 
 Prefer `list_cdp_tabs.py --redact` / `decode_firefox_session.py --redact`

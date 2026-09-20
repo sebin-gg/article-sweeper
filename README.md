@@ -60,9 +60,11 @@ summary. No names = all detected browsers swept.
    creates the file when missing and never overwrites existing files.
    Concurrent batches append under lock; the header count is recounted
    authoritatively at the end.
-5. It closes only the summarized Chromium tabs (revalidated by canonical
-   URL immediately before close, disappearance confirmed) and reports what
-   stayed open. Firefox tabs close by hand from the printed list.
+5. It closes only the summarized Chromium tabs (`--expect` revalidation
+   by canonical URL immediately before close is required, endpoint
+   identity checked, disappearance confirmed, unverifiable closes fail)
+   and reports what stayed open. Firefox tabs close by hand from the
+   printed list.
 
 ### Example entry
 
@@ -77,7 +79,7 @@ Takeaway: <one sentence>
 ## Project layout
 
 - `article-sweeper/SKILL.md` — the skill: execution mode (scripts default), detect, enumerate, classify, summarize, append, close.
-- `article-sweeper/scripts/` — `sweep_lib.py` (deterministic core: normalize, dedupe, classify, CDP validation, close verification, atomic append), `list_cdp_tabs.py`, `cdp_close.py`, `decode_firefox_session.py`.
+- `article-sweeper/scripts/` — `sweep_lib.py` (deterministic core: normalize, dedupe, classify, CDP validation, close verification, endpoint identity, atomic append, redaction), `list_cdp_tabs.py`, `cdp_close.py`, `decode_firefox_session.py`.
 - `article-sweeper/references/` — `chromium.md`, `firefox.md`, `dev-mode.md` per-browser details.
 - `tests/` — pytest suite with mocked CDP / Firefox fixtures.
 - `CHANGELOG.md` — release notes per version.
@@ -98,8 +100,9 @@ Chromium browser only to enable its debugging port, only on its own port,
 and only after confirming session restore via that vendor's actual
 preference schema. It never force-kills the browser and never deletes
 session files. Debugging stays on loopback only; scratch captures
-(`cdp*.json`, dev logs) may contain sensitive URLs and are deleted at the
-end of each run (prefer `--redact`). When it cannot reach a tab safely, it prints a close list and
+(`cdp*.json`, Firefox `*.copy.jsonlz4`, dev logs) may contain sensitive
+URLs and full session state and are deleted at the
+end of each run (prefer `--redact`, best-effort only). When it cannot reach a tab safely, it prints a close list and
 leaves the tabs open. Firefox enumeration is read-only; Firefox tabs always
 close by hand.
 

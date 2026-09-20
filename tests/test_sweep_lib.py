@@ -13,7 +13,9 @@ from sweep_lib import (  # noqa: E402
     TabRecord,
     atomic_append,
     canonicalize_url,
+    check_endpoint_identity,
     classify_url,
+    cleanup_session_copy,
     copy_session_safe,
     decode_mozlz4,
     dedupe_key,
@@ -95,6 +97,39 @@ def test_redact_masks_tokens():
     r = redact_url("https://ex.com/d?token=abc&page=2")
     assert "abc" not in r
     assert "page=2" in r
+
+
+def test_redact_masks_fragment_userinfo_and_path_token():
+    frag = redact_url("https://ex.com/cb#access_token=secret123&token_type=bearer")
+    assert "secret123" not in frag
+    ui = redact_url("https://user:pass123@ex.com/a")
+    assert "pass123" not in ui and "ex.com" in ui
+    jwt = ("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0."
+           "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c")
+    pr = redact_url(f"https://ex.com/invite/{jwt}")
+    assert jwt not in pr and "***" in pr
+    # human slugs stay readable
+    assert "why-x" in redact_url("https://ex.com/blog/why-x")
+
+
+def test_check_endpoint_identity_matches_and_rejects():
+    good = {"Browser": "Chrome/136.0.0.0", "Protocol-Version": "1.3"}
+    out = check_endpoint_identity(
+        "127.0.0.1", 9224, expect_browser="chrome",
+        fetch_version=lambda h, p: good)
+    assert out["Browser"].startswith("Chrome")
+    with pytest.raises(ValueError):
+        check_endpoint_identity(
+            "127.0.0.1", 9224, expect_browser="brave",
+            fetch_version=lambda h, p: good)
+    with pytest.raises(ValueError):
+        check_endpoint_identity(
+            "127.0.0.1", 9224, expect_browser="",
+            fetch_version=lambda h, p: ["not-a-dict"])
+    with pytest.raises(ValueError):
+        def _boom(h, p):
+            raise RuntimeError("down")
+        check_endpoint_identity("127.0.0.1", 9224, fetch_version=_boom)
 
 
 # --- classifier --------------------------------------------------------------
@@ -221,13 +256,23 @@ def test_pick_current_entry_index_aware():
 def test_decode_and_copy_safe(tmp_path):
     src = tmp_path / "sessionstore.jsonlz4"
     src.write_bytes(make_session_bytes())
-    dst = copy_session_safe(src, tmp_path / "scratch")
+    dst = copy_session_safe(src, tmp_path / "scratch", settle_ms=1)
     assert dst.is_file() and dst != src
     doc = decode_mozlz4(dst.read_bytes())
     assert doc["windows"][0]["tabs"][0]["entries"][0]["url"] == \
         "https://ex.com/old"
     with pytest.raises(ValueError):
         decode_mozlz4(b"not-a-session")
+    cleanup_session_copy(dst)
+
+
+def test_copy_stable_and_cleanup(tmp_path):
+    src = tmp_path / "sessionstore.jsonlz4"
+    src.write_bytes(make_session_bytes())
+    dst = copy_session_safe(src, tmp_path / "scratch", settle_ms=1)
+    assert dst.is_file() and dst != src
+    cleanup_session_copy(dst)
+    assert not dst.exists()
 
 
 def test_session_freshness_backup_newer(tmp_path):
@@ -271,13 +316,35 @@ def test_list_cli_ok_and_redact(tmp_path):
     assert "TOTAL PAGES: 1" in r.stderr
 
 
-def test_close_cli_validates_port(tmp_path):
+def test_close_cli_requires_expect_and_validates(tmp_path):
     ids = tmp_path / "ids.txt"
     ids.write_text("A\n", encoding="utf-8")
+    # --expect missing entirely => argparse error, no blind close
     r = run("cdp_close.py", str(ids), "--port", "99999")
+    assert r.returncode != 0 and "--expect" in (r.stderr + r.stdout)
+    # --expect present but bad port still rejected
+    exp = tmp_path / "exp.json"
+    exp.write_text("[]", encoding="utf-8")
+    r = run("cdp_close.py", str(ids), "--port", "99999",
+            "--expect", str(exp))
     assert r.returncode != 0 and "bad port" in (r.stderr + r.stdout)
-    r2 = run("cdp_close.py", str(ids), "--host", "0.0.0.0")
+    r2 = run("cdp_close.py", str(ids), "--host", "0.0.0.0",
+             "--expect", str(exp))
     assert r2.returncode != 0 and "loopback" in (r2.stderr + r2.stdout)
+
+
+def test_decode_cli_refuses_no_copy_on_live_path(tmp_path):
+    live = tmp_path / "profile" / "sessionstore.jsonlz4"
+    live.parent.mkdir(parents=True)
+    live.write_bytes(make_session_bytes())
+    r = run("decode_firefox_session.py", str(live), "--no-copy")
+    assert r.returncode != 0 and "--no-copy" in (r.stderr + r.stdout)
+    # explicit scratch copy location passes the guard
+    ok_copy = tmp_path / "opencode" / "sessionstore.copy.jsonlz4"
+    ok_copy.parent.mkdir(parents=True)
+    ok_copy.write_bytes(make_session_bytes())
+    r2 = run("decode_firefox_session.py", str(ok_copy), "--no-copy")
+    assert r2.returncode == 0
 
 
 def test_decode_cli_copies_and_warns(tmp_path):
