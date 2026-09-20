@@ -1,4 +1,4 @@
-name: lint skill
+name: ci
 
 "on":
   push:
@@ -13,8 +13,8 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
       - name: Lint skill
@@ -33,9 +33,26 @@ jobs:
           for ref in ("references/chromium.md", "references/firefox.md",
                       "references/dev-mode.md"):
               assert (root / ref).exists(), f"missing {ref}"
-          for script in ("scripts/list_cdp_tabs.py",
-                         "scripts/cdp_close.py",
-                         "scripts/decode_firefox_session.py"):
+          for script in ("scripts/sweep_lib.py",
+                          "scripts/list_cdp_tabs.py",
+                          "scripts/cdp_close.py",
+                          "scripts/decode_firefox_session.py"):
               compile((root / script).read_text(encoding="utf-8"), script, "exec")
+          version = re.search(r"^\s*version:\s*(\S+)", frontmatter, re.M).group(1)
+          changelog = Path("CHANGELOG.md").read_text(encoding="utf-8")
+          assert f"[{version}]" in changelog, \
+              f"CHANGELOG has no entry for version {version}"
           print("skill lint ok")
           EOF
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - name: Install test deps
+        run: pip install lz4 pytest
+      - name: Behavioral tests (mocked CDP / Firefox fixtures)
+        run: python -m pytest tests/ -q

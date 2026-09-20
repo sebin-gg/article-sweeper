@@ -4,7 +4,7 @@ description: Summarize open article tabs in Thorium, Chromium, Chrome, Brave, Ed
 license: MIT
 allowed-tools: ["Bash", "Read", "Edit", "Write", "Task", "WebFetch", "WebSearch"]
 metadata:
-  version: 1.0.1
+  version: 1.1.0
   tags: ["browser", "tabs", "summarize", "thorium", "chromium", "firefox"]
 ---
 
@@ -12,21 +12,29 @@ metadata:
 
 When invoked:
 
-1. Scope browsers: if the user names browsers ("only chrome and
+1. Resolve execution mode (scripts default; Browser/Computer Use only on
+   explicit request — see §0.5).
+2. Scope browsers: if the user names browsers ("only chrome and
    firefox", "just thorium"), sweep those only. Otherwise sweep every
    detected browser. Match names case-insensitively
    (`chrome` = Chrome, `edge` = Edge, etc.).
-2. Detect browsers, pick Chromium or Firefox reference.
-3. Enumerate live tabs. Prefer CDP to session files.
-4. Classify each tab: article or leave-open. Dedupe tracking wrappers.
-5. Summarize each unique article. Fixed entry format.
-6. Append entries to today's file. Modify no other files.
-7. Close only summarized tabs. Verify rest stayed open.
+3. Detect browsers, pick Chromium or Firefox reference.
+4. Enumerate live tabs. Prefer CDP to session files.
+5. Classify each tab: article or leave-open. Dedupe tracking wrappers.
+6. Summarize each unique article. Fixed entry format.
+7. Append entries to today's file. Modify no other files.
+8. Close only summarized tabs. Verify rest stayed open.
 
 ## 0. Requirements and portability
 
 Requires: Chromium-family browser and/or Firefox, `curl`, `python3`.
-Optional: `lz4cat` (Firefox offline decode), WebFetch/WebSearch tools.
+Required python package for Firefox decode: `lz4` (`pip install lz4` —
+the old `tail`/`lz4cat` fallback was removed as known-unreliable).
+Optional: WebFetch/WebSearch tools.
+
+Deterministic core: `scripts/sweep_lib.py` (URL normalize/dedupe,
+classifier baseline, CDP validation, close revalidation, atomic append,
+redaction). Use it — do not reimplement its rules in prose.
 
 Scratch dir: `/tmp/opencode` Linux/macOS. Windows: `%TEMP%\opencode`
 (Git Bash: `/tmp/opencode` also works). Read every `/tmp/opencode` path
@@ -34,6 +42,46 @@ below as `$SCRATCH` on Windows.
 
 Desktop file: `~/Desktop/` Linux/macOS. Windows: `$USERPROFILE\Desktop\`.
 Same `summary article YYYY-MM-DD.txt` basename all systems.
+
+## 0.5. Execution mode
+
+Default to local scripts.
+
+1. **Explicit Browser Use request**
+   * If the user explicitly asks to use Browser Use, browser automation,
+     or the browser UI, use **Browser Use**.
+   * Examples: "use browser use", "use the browser to do this",
+     "browser automation".
+2. **Explicit Computer Use request**
+   * If the user explicitly asks to use Computer Use, the computer,
+     desktop, GUI, clicking, typing, or visual interaction, use
+     **Computer Use**.
+   * Examples: "use computer use", "do it through the desktop",
+     "click through it visually".
+3. **No explicit capability request**
+   * Use the existing **local script workflow**.
+   * Do not switch to Browser Use or Computer Use merely because those
+     capabilities are available.
+4. **Explicit capability always overrides script-first behavior**
+   * "Use Browser Use" → Browser Use.
+   * "Use Computer Use" → Computer Use.
+   * Otherwise → local scripts.
+5. **Do not infer capability preference**
+   * A request such as "summarize my Chrome tabs" does not by itself
+     mean Browser Use or Computer Use.
+   * A request such as "summarize my tabs by clicking through the
+     browser" explicitly requests Computer Use.
+
+Priority:
+
+```text
+Explicit Computer Use request → Computer Use
+Explicit Browser Use request  → Browser Use
+No explicit request           → Local scripts
+```
+
+Local scripts remain the default because they are generally more
+token-efficient and deterministic.
 
 ## 1. Detect browsers
 
@@ -52,35 +100,50 @@ done
   read `references/chromium.md` for session paths, close flow.
 - Firefox: read `references/firefox.md` for profile paths, decode script.
   `references/dev-mode.md` covers restarts for both families.
+- Cross-browser claim: only Chromium CDP + Firefox session parsing are
+  implemented here; other Chromium derivatives are treated as
+  Chromium-compatible *pending per-browser verification* (list → close
+  one test tab → recount) — see `references/chromium.md`.
 
 ## 2. Enumerate live tabs (preferred)
 
-Browser running with `--remote-debugging-port=9222`: CDP page list is ground
-truth. Session files mix live tabs with per-tab navigation history, so
-`strings | grep '^https://'` overcounts.
+Each Chromium-family browser gets its **own loopback port** (defaults:
+thorium 9222, chromium 9223, chrome 9224, brave 9225, edge 9226, vivaldi
+9227, opera 9228; pick a free one on collision). Chrome 136+ ignores
+`--remote-debugging-port` on the default profile — it needs a dedicated
+`--user-data-dir` (see `references/dev-mode.md`); never claim to sweep
+tabs that are not visible in the debugging instance.
 
 ```bash
-curl -s http://127.0.0.1:9222/json/list > $SCRATCH/cdp.json
-python3 scripts/list_cdp_tabs.py $SCRATCH/cdp.json
+curl -s http://127.0.0.1:<port>/json/list > $SCRATCH/cdp.json
+python3 scripts/list_cdp_tabs.py $SCRATCH/cdp.json \
+  --endpoint 127.0.0.1:<port> --browser <name> [--redact]
 ```
 
-Firefox offline: `python3 scripts/decode_firefox_session.py <session-copy>`.
-See `references/chromium.md` and `references/firefox.md` for details.
+Firefox (read-only): `python3 scripts/decode_firefox_session.py
+<session-path>` — the script copies to scratch and decodes the copy by
+default. See `references/chromium.md` and `references/firefox.md` for
+details.
 
 ## 3. Classify tabs as article or leave-open
 
-Unwrap tracking wrappers first (`google.com/url?q=`, `tracking.tldrnewsletter.com/CL0/...`,
-`tracking.inflection.io`, kit-mail `lmu...` paths), then dedup by
-`scheme://host + path` (drop `utm_*`, fragments).
+Run the deterministic baseline first (`sweep_lib.unwrap_tracking_wrapper`,
+`canonicalize_url`, `dedupe_tabs`, `classify_url`), then apply judgment:
 
-Summarize: news posts, blog posts, docs, papers, release notes, tutorials.
-
-Never summarize, never close:
-
-- webmail, chats, calendars, drives, dashboards, repos, app/product homepages
-- trackers, auth flows, extension-blocked pages, `devtools://`, `chrome://`
-- adult pages, social feeds (summarize only a post if the user names it)
-- status pages, checklists/tools that are apps, not articles
+- Unwrap tracking wrappers, then dedupe by **canonical URL**: same
+  scheme://host + path + *meaningful* query. Only known tracking params
+  (`utm_*`, `gclid`, `fbclid`, ...) and fragments are dropped —
+  pagination, language, revision, and content-id params are significant
+  and must NOT be merged.
+- Baseline article signals: news posts, blog posts, docs, papers, release
+  notes, tutorials. Baseline leave-open: webmail, chats, calendars,
+  drives, dashboards, repos, app/product homepages, trackers, auth flows,
+  extension-blocked pages, internal schemes (`devtools://`, `chrome://`,
+  `edge://`, ...), adult pages, social feeds (summarize only a post if
+  the user names it), status pages, checklists/tools that are apps.
+- Every close candidate keeps its endpoint+browser identity plus the
+  canonical URL it was approved under; `cdp_close.py --expect` rechecks
+  that identity immediately before closing.
 
 Duplicates of one article (AMP, `?sk=`, author subdomains) collapse to one
 entry. Record every duplicate tab id: all of them close later.
@@ -124,31 +187,53 @@ Protected / left open (non-articles, not summarised):
 - ...
 ```
 
-- Append each batch with Edit (Read file first), updating header count.
-  Verify with `grep -c '^## ' <file>`.
+- Append with the atomic helper (`sweep_lib.atomic_append()` — temp file
+  + rename for create, locked append for batches), so parallel subagents
+  cannot interleave. After all batches, authoritative
+  `sweep_lib.recount_entries()` fixes the header count; verify with
+  `grep -c '^## ' <file>`.
 
 ## 6. Close only summarized tabs
 
-Chromium: `python3 scripts/cdp_close.py <ids.txt>`. One PUT per tab id,
-20 parallel workers, 5s timeout. Verify zero ids from close set remain,
-recount pages.
+Chromium: snapshot the fresh list, then close with revalidation:
 
-Firefox has no CDP close-by-id equivalent in this flow. Close summarized
-Firefox tabs by hand from printed close list. Never kill renderer
+```bash
+curl -s http://127.0.0.1:<port>/json/list > $SCRATCH/cdp-before.json
+python3 scripts/cdp_close.py ids.txt --host 127.0.0.1 --port <port> \
+  --expect $SCRATCH/cdp-before.json --browser <name> \
+  --endpoint 127.0.0.1:<port>
+```
+
+The script refuses ids missing from `--expect`, skips ids that vanished
+or navigated since approval (canonical-URL comparison), and confirms each
+target disappeared afterwards. Afterwards run the before/after set
+comparison (`sweep_lib.diff_tab_sets()`): zero ids from the close set
+remain, and anything else that closed unexpectedly is reported.
+
+Firefox has no automated close in this flow (read-only enumeration).
+Close summarized Firefox tabs by hand from the printed close list and
+report summarized vs closed counts separately. Never kill renderer
 processes: one process hosts many tabs.
 
 ## 7. Dev mode
 
 Dev mode means running with remote debugging on. Read
-`references/dev-mode.md` for backup rule, per-OS launch commands,
-`--auto-open-devtools-for-tabs` warning. Confirm
-`restore_on_startup == 1` before any restart.
+`references/dev-mode.md` for the Chrome 136+ `--user-data-dir`
+requirement, per-browser ports, safe PID identification, the backup rule,
+per-vendor session-restore checks, `--auto-open-devtools-for-tabs`
+warning, and scratch cleanup. Confirm restore is on (vendor's actual
+schema) before any restart.
 
 ## 8. Safety
 
 - Backup before kill. Kill is data-loss-adjacent (form input, unsubmitted
   work) with session restore on.
-- Never `pkill -9` browser. Never delete session files.
+- Never `pkill -9` browser (and never bare `pkill <name>` — it can hit
+  unrelated browsers). Never delete session files.
+- CDP is loopback-only by design; connecting to a logged-in session
+  exposes accounts/cookies/page content, so minimize scratch captures,
+  prefer `--redact`, and delete `$SCRATCH/cdp*.json` + dev logs at the
+  end of every run.
 - CDP unreachable and user will not approve restart: summarize, print exact
   close list, leave all tabs open.
 - Report at end: file path + entry count, closed count, remaining page

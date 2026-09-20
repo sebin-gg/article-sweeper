@@ -6,15 +6,22 @@
   <a href="https://github.com/sebin-gg/article-sweeper/stargazers"><img src="https://img.shields.io/github/stars/sebin-gg/article-sweeper?style=social" alt="Stars"></a>
 </p>
 
-> **The zero-config tab sweeper for article hoarders.** Summarizes open article tabs across Thorium, Chromium, Chrome, Brave, Edge, Vivaldi, Opera, and Firefox, files them to a dated desktop note, and closes only the summarized tabs.
+> **A tab sweeper for article hoarders.** Summarizes open article tabs across Thorium, Chromium, Chrome, Brave, Edge, Vivaldi, Opera, and Firefox, files them to a dated desktop note, and closes only the summarized tabs.
+>
+> Execution: local scripts by default. Browser Use or Computer Use only
+> when you explicitly ask for them ("use browser use" / "use computer
+> use"). A plain "summarize my tabs" request runs the script workflow.
 
 ## Highlights
 
-- **Cross-browser**: Chromium family via CDP ground truth, Firefox via `sessionstore.jsonlz4` decode.
+- **Cross-browser**: Chromium family via CDP tab lists (verified per
+  browser; derivatives treated as Chromium-compatible pending a
+  list → close-one → recount check), Firefox via read-only
+  `sessionstore.jsonlz4` decode (safe copy + staleness warnings).
 - **Article-only**: mail, chats, repos, dashboards, trackers, and adult pages stay open, never summarized.
-- **Append-only notes**: entries go to `~/Desktop/summary article YYYY-MM-DD.txt`. Creates when missing, never overwrites.
-- **Safe close**: closes only summarized tab ids, verifies the rest stayed open. Firefox tabs close by hand from a printed list.
-- **Dev-mode restart**: backup first, session-restore check, no `pkill -9`, no session-file deletes.
+- **Append-only notes**: entries go to `~/Desktop/summary article YYYY-MM-DD.txt`. Creates when missing, never overwrites; atomic locked appends with an authoritative recount.
+- **Safe close**: Chromium tabs revalidated (same canonical URL) immediately before close with disappearance checks; verifies the rest stayed open. Firefox tabs close by hand from a printed list.
+- **Dev-mode restart**: backup first, per-browser loopback ports, session-restore check against the vendor's actual schema, no `pkill -9`, no session-file deletes. Note: Chrome 136+ needs a dedicated `--user-data-dir` for remote debugging — the live default profile cannot be CDP-attached in place.
 
 ## Install
 
@@ -41,15 +48,21 @@ summary. No names = all detected browsers swept.
 
 1. It lists live tabs in Thorium, Chromium, Chrome, Brave, Edge, Vivaldi,
    Opera, and Firefox. For Chromium-family browsers it reads the tabs
-   through the debugging port. For Firefox it reads a copy of
-   `sessionstore.jsonlz4`.
-2. It sorts articles from non-articles. Mail, chats, repos, dashboards,
+   through each browser's own debugging port. For Firefox it reads a safe
+   copy of `sessionstore.jsonlz4` (read-only; staleness warnings included).
+2. It sorts articles from non-articles with a deterministic URL
+   normalize/dedupe/classify baseline (`scripts/sweep_lib.py`) plus agent
+   judgment. Mail, chats, repos, dashboards,
    trackers, and adult pages stay open and get no summary.
 3. It writes one entry per article with a link, a short summary, and a
    takeaway.
 4. It appends the entries to `~/Desktop/summary article YYYY-MM-DD.txt`. It
    creates the file when missing and never overwrites existing files.
-5. It closes only the summarized tabs and reports what stayed open.
+   Concurrent batches append under lock; the header count is recounted
+   authoritatively at the end.
+5. It closes only the summarized Chromium tabs (revalidated by canonical
+   URL immediately before close, disappearance confirmed) and reports what
+   stayed open. Firefox tabs close by hand from the printed list.
 
 ### Example entry
 
@@ -63,25 +76,32 @@ Takeaway: <one sentence>
 
 ## Project layout
 
-- `article-sweeper/SKILL.md` — the skill: detect, enumerate, classify, summarize, append, close.
-- `article-sweeper/scripts/` — `list_cdp_tabs.py`, `cdp_close.py`, `decode_firefox_session.py`.
+- `article-sweeper/SKILL.md` — the skill: execution mode (scripts default), detect, enumerate, classify, summarize, append, close.
+- `article-sweeper/scripts/` — `sweep_lib.py` (deterministic core: normalize, dedupe, classify, CDP validation, close verification, atomic append), `list_cdp_tabs.py`, `cdp_close.py`, `decode_firefox_session.py`.
 - `article-sweeper/references/` — `chromium.md`, `firefox.md`, `dev-mode.md` per-browser details.
+- `tests/` — pytest suite with mocked CDP / Firefox fixtures.
 - `CHANGELOG.md` — release notes per version.
 
 ## Requirements
 
 - One supported browser from the list above.
 - `curl` and `python3` on your PATH.
-- `lz4cat` for offline Firefox session reads.
+- Python package `lz4` (`pip install lz4`) for Firefox session reads.
 - The WebFetch and WebSearch tools in your agent for fetching and fallback.
+- Remote debugging needs a per-browser loopback port; Chrome 136+ additionally
+  needs a dedicated `--user-data-dir` (see `article-sweeper/references/dev-mode.md`).
 
 ## Safety
 
-The skill backs up browser session data before any restart. It restarts the
-browser only to enable the debugging port, and only after confirming that
-session restore is on. It never force-kills the browser and never deletes
-session files. When it cannot reach a tab safely, it prints a close list and
-leaves the tabs open.
+The skill backs up browser session data before any restart. It restarts a
+Chromium browser only to enable its debugging port, only on its own port,
+and only after confirming session restore via that vendor's actual
+preference schema. It never force-kills the browser and never deletes
+session files. Debugging stays on loopback only; scratch captures
+(`cdp*.json`, dev logs) may contain sensitive URLs and are deleted at the
+end of each run (prefer `--redact`). When it cannot reach a tab safely, it prints a close list and
+leaves the tabs open. Firefox enumeration is read-only; Firefox tabs always
+close by hand.
 
 ## Browsers and paths
 
@@ -107,7 +127,9 @@ Firefox profiles live under `~/.mozilla/firefox/` or
 
 ### Vendor references
 
-- [Chrome DevTools Protocol](https://chromedevtools.github.io/devtools-protocol/) — `/json/list` enumeration, `/json/close/<id>` close. Ground truth over session files.
+- [Chrome DevTools Protocol](https://chromedevtools.github.io/devtools-protocol/) — `/json/list` enumeration, `/json/close/<id>` close. Tab lists (per-browser endpoints) over session files.
+- [Firefox profiles — where user data is stored](https://support.mozilla.org/en-US/kb/profiles-where-firefox-stores-user-data) — profile layout, `sessionstore.jsonlz4` location.
+- [Chrome 136 remote-debugging restriction](https://developer.chrome.com/docs/devtools) — `--remote-debugging-port` requires a non-default `--user-data-dir`; see `article-sweeper/references/dev-mode.md`.
 - [Firefox profiles — where user data is stored](https://support.mozilla.org/en-US/kb/profiles-where-firefox-stores-user-data) — profile layout, `sessionstore.jsonlz4` location.
 - Skill internals: `article-sweeper/references/chromium.md`, `article-sweeper/references/firefox.md`, `article-sweeper/references/dev-mode.md`.
 
