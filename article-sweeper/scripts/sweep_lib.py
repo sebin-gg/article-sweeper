@@ -69,7 +69,8 @@ def cdp_host_for_url(host: str) -> str:
 
 def cdp_url(host: str, port, path: str) -> str:
     """Build a CDP loopback URL with correct IPv6 bracketing."""
-    return f"http://{cdp_host_for_url(host)}:{validate_port(port)}{path}"
+    # CDP loopback-only by design (validate_host); no HTTPS endpoint exists.
+    return f"http://{cdp_host_for_url(host)}:{validate_port(port)}{path}"  # NOSONAR python:S5332
 
 
 def find_free_port(exclude: set[int] | None = None) -> int:
