@@ -133,7 +133,6 @@ Firefox profiles live under `~/.mozilla/firefox/` or
 - [Chrome DevTools Protocol](https://chromedevtools.github.io/devtools-protocol/) — `/json/list` enumeration, `/json/close/<id>` close. Tab lists (per-browser endpoints) over session files.
 - [Firefox profiles — where user data is stored](https://support.mozilla.org/en-US/kb/profiles-where-firefox-stores-user-data) — profile layout, `sessionstore.jsonlz4` location.
 - [Chrome 136 remote-debugging restriction](https://developer.chrome.com/docs/devtools) — `--remote-debugging-port` requires a non-default `--user-data-dir`; see `article-sweeper/references/dev-mode.md`.
-- [Firefox profiles — where user data is stored](https://support.mozilla.org/en-US/kb/profiles-where-firefox-stores-user-data) — profile layout, `sessionstore.jsonlz4` location.
 - Skill internals: `article-sweeper/references/chromium.md`, `article-sweeper/references/firefox.md`, `article-sweeper/references/dev-mode.md`.
 
 ## FAQ
