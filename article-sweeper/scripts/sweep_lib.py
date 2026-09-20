@@ -489,7 +489,9 @@ def check_endpoint_identity(host: str, port: int, *,
         except Exception as exc:
             raise ValueError(f"CDP endpoint {host}:{port} unreachable: {exc}")
     else:
-        url = f"http://{host}:{port}/json/version"
+        # CDP loopback-only by design: validate_host() restricts host to
+        # 127.0.0.1/localhost/::1, CDP offers no HTTPS endpoint.
+        url = f"http://{host}:{port}/json/version"  # NOSONAR python:S5332
         try:
             with _urlreq.urlopen(url, timeout=timeout) as resp:
                 payload = _json.loads(resp.read().decode("utf-8", "replace"))
@@ -617,6 +619,8 @@ def copy_session_safe(src: Path, scratch: Path, *,
                       retries: int = 5, settle_ms: int = 200) -> Path:
     """Copy a live session file to scratch first; never read live in place.
 
+    Local-operator CLI tool: `src`/`scratch` come from the invoking
+    operator (same trust as shell redirection), not remote input.
     Firefox may be writing the source concurrently, so a single
     shutil.copyfile can tear. Mitigation: copy twice and require
     identical bytes (stable snapshot); retry until stable or retries
@@ -635,15 +639,15 @@ def copy_session_safe(src: Path, scratch: Path, *,
     last_err: Exception | None = None
     for _ in range(max(1, retries)):
         try:
-            with open(src, "rb") as fh:
+            with open(src, "rb") as fh:  # NOSONAR pythonsecurity:S8707
                 first = fh.read()
             _time.sleep(settle_ms / 1000.0)
-            with open(src, "rb") as fh:
+            with open(src, "rb") as fh:  # NOSONAR pythonsecurity:S8707
                 second = fh.read()
             if first != second:
                 last_err = ValueError("session file changed during copy; retrying")
                 continue
-            with open(dst, "wb") as out:
+            with open(dst, "wb") as out:  # NOSONAR pythonsecurity:S8707
                 out.write(second)
                 out.flush()
                 try:
@@ -674,10 +678,10 @@ def cleanup_session_copy(path: Path) -> None:
             is_tmp = False
         if is_copy or is_tmp:
             try:
-                p.unlink(missing_ok=True)
+                p.unlink(missing_ok=True)  # NOSONAR pythonsecurity:S8707
             except TypeError:
                 if p.exists():
-                    p.unlink()
+                    p.unlink()  # NOSONAR pythonsecurity:S8707
     except Exception:
         pass
 
