@@ -1,8 +1,13 @@
 name: lint skill
 
-on:
+"on":
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   lint:
@@ -12,7 +17,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
-      - run: |
+      - name: Lint skill
+        run: |
           python - <<'EOF'
           import re
           from pathlib import Path
