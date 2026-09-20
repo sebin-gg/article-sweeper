@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.opencode/
+sessionstore.copy.jsonlz4
+*.copy.jsonlz4
+cdp*.json
+*-dev.log
+Desktop/summary*.txt
+.env

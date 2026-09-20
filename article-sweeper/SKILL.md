@@ -33,8 +33,9 @@ the old `tail`/`lz4cat` fallback was removed as known-unreliable).
 Optional: WebFetch/WebSearch tools.
 
 Deterministic core: `scripts/sweep_lib.py` (URL normalize/dedupe,
-classifier baseline, CDP validation, close revalidation, atomic append,
-redaction). Use it — do not reimplement its rules in prose.
+classifier baseline, CDP validation, close revalidation, endpoint
+identity check, atomic append, redaction). Use it — do not reimplement
+its rules in prose.
 
 Scratch dir: `/tmp/opencode` Linux/macOS. Windows: `%TEMP%\opencode`
 (Git Bash: `/tmp/opencode` also works). Read every `/tmp/opencode` path
@@ -188,14 +189,17 @@ Protected / left open (non-articles, not summarised):
 ```
 
 - Append with the atomic helper (`sweep_lib.atomic_append()` — temp file
-  + rename for create, locked append for batches), so parallel subagents
+  + rename for create, locked append for batches; lock is mandatory on
+  all platforms via `fcntl.flock` on POSIX and `msvcrt.locking` on
+  Windows, never a silent no-op), so parallel subagents
   cannot interleave. After all batches, authoritative
   `sweep_lib.recount_entries()` fixes the header count; verify with
   `grep -c '^## ' <file>`.
 
 ## 6. Close only summarized tabs
 
-Chromium: snapshot the fresh list, then close with revalidation:
+Chromium: snapshot the fresh list, then close with mandatory revalidation
+(`--expect` is required — there is no blind close-by-id path):
 
 ```bash
 curl -s http://127.0.0.1:<port>/json/list > $SCRATCH/cdp-before.json
@@ -205,10 +209,13 @@ python3 scripts/cdp_close.py ids.txt --host 127.0.0.1 --port <port> \
 ```
 
 The script refuses ids missing from `--expect`, skips ids that vanished
-or navigated since approval (canonical-URL comparison), and confirms each
-target disappeared afterwards. Afterwards run the before/after set
-comparison (`sweep_lib.diff_tab_sets()`): zero ids from the close set
-remain, and anything else that closed unexpectedly is reported.
+or navigated since approval (canonical-URL comparison), validates the
+endpoint answers `/json/version` (and matches `--browser` when given),
+and confirms each target disappeared afterwards — unverifiable closes
+(list unreachable) count as FAILED with non-zero exit. Afterwards run
+the before/after set comparison (`sweep_lib.diff_tab_sets()`): zero ids
+from the close set remain, and anything else that closed unexpectedly
+is reported (non-zero exit).
 
 Firefox has no automated close in this flow (read-only enumeration).
 Close summarized Firefox tabs by hand from the printed close list and
@@ -232,7 +239,10 @@ schema) before any restart.
   unrelated browsers). Never delete session files.
 - CDP is loopback-only by design; connecting to a logged-in session
   exposes accounts/cookies/page content, so minimize scratch captures,
-  prefer `--redact`, and delete `$SCRATCH/cdp*.json` + dev logs at the
+  prefer `--redact` (best-effort: covers query, fragment, userinfo, and
+  token-shaped path segments — never treat redacted output as
+  proven-safe), and delete `$SCRATCH/cdp*.json` +
+  `$SCRATCH/*.copy.jsonlz4` + dev logs at the
   end of every run.
 - CDP unreachable and user will not approve restart: summarize, print exact
   close list, leave all tabs open.

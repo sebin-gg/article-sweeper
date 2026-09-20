@@ -10,7 +10,10 @@ Brave, Edge, Vivaldi, or Opera.
 > vendor binaries, profile layouts, and CDP behavior differ. Verify per
 > browser (list → close one test tab → recount) before sweeping it, and
 > record the result in the run report. Do not claim an unverified browser
-> "works".
+> "works". There is no single end-to-end `sweep` executable by design:
+> summarization needs agent judgment, so the repo ships deterministic
+> primitives (enumerate → classify → append → close) plus the SKILL.md
+> orchestration instead of one opaque command.
 
 ## Session paths
 
@@ -62,8 +65,12 @@ python3 scripts/cdp_close.py ids.txt --host 127.0.0.1 --port <port> \
 
 The script skips ids that vanished or navigated since approval (canonical
 URL compared via `sweep_lib.verify_close_candidates()`), refuses ids not
-present in `--expect` (stale/forged lists), and re-fetches `/json/list`
-after each close instead of trusting a bare HTTP 200. Recount pages
+present in `--expect` (stale/forged lists; `--expect` is required, there
+is no blind close-by-id path), checks `/json/version` endpoint identity
+via `sweep_lib.check_endpoint_identity()` before touching any tab, and
+re-fetches `/json/list`
+after each close instead of trusting a bare HTTP 200 — unverifiable
+closes fail the run. Recount pages
 afterwards with `sweep_lib.diff_tab_sets()` and confirm zero ids from the
 close set remain. `--port` must satisfy 1–65535; `--host` is loopback-only
 by design.

@@ -1,21 +1,25 @@
-"""Close Chromium tabs by CDP id, with pre-close revalidation.
+"""Close Chromium tabs by CDP id, with mandatory pre-close revalidation.
 
 Usage:
-    python3 cdp_close.py <ids.txt> [--port 9222] [--host 127.0.0.1]
-        [--expect <cdp-before.json>] [--browser chrome] [--endpoint 127.0.0.1:9222]
+    python3 cdp_close.py <ids.txt> --expect <cdp-before.json>
+        [--port 9222] [--host 127.0.0.1]
+        [--browser chrome] [--endpoint 127.0.0.1:9222]
 
-Safety vs the old version:
-- --port must satisfy 1 <= port <= 65535 (isdigit() alone is not enough).
-- --host is restricted to loopback by design (documented trust boundary).
-- With --expect, ids are revalidated against the fresh /json/list *right
-  before* closing: ids that vanished or navigated (canonical-URL mismatch)
-  are skipped, never closed blind.
+Safety (all mandatory, no bypass):
+- --expect is REQUIRED: ids are revalidated against the fresh /json/list
+  *right before* closing. Ids that vanished or navigated
+  (canonical-URL mismatch) are skipped, never closed blind. Ids missing
+  from --expect abort the run (stale/forged close list).
+- --browser triggers a /json/version identity check so a stray local
+  CDP service on a reused port cannot be driven by mistake.
 - After closing, each target is re-fetched to confirm it disappeared;
-  a bare HTTP 200 is NOT treated as proof of close.
+  a bare HTTP 200 is NOT proof of close. Unverifiable closes (list
+  unreachable post-close) are reported FAILED with non-zero exit.
+- --port must satisfy 1 <= port <= 65535. --host is loopback-only.
 
 ids.txt holds one tab id per line. Prints per-id results to stdout and a
-summary to stderr. Exits 0 only when every requested id either closed or
-was safely skipped as gone (skips are reported, not hidden).
+summary to stderr. Exits 0 only when every requested id either closed
+(verified disappearance) or was safely skipped as gone.
 """
 import argparse
 import concurrent.futures
@@ -29,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sweep_lib import (  # noqa: E402
     DEFAULT_HOST,
     TabRecord,
+    check_endpoint_identity,
     parse_cdp_list,
     redact_url,
     validate_host,
@@ -50,14 +55,14 @@ def close_one(host, port, tab_id, timeout=5):
             urllib.request.Request(url, method="PUT"), timeout=timeout
         ) as resp:
             body = redact_url(resp.read().decode("utf-8", "replace"))[:80]
-        # verify the target actually disappeared (not just HTTP 200)
+        # verify the target actually disappeared (not just HTTP 200).
+        # Unverifiable == FAILED: a safety tool must not claim success
+        # it could not prove.
         try:
             live = {d.get("id") for d in fetch_list(host, port)
                     if isinstance(d, dict)}
-        except Exception:
-            live = None  # endpoint unreachable post-close: report honestly
-        if live is None:
-            return tab_id, True, f"{body} (unverified: list unreachable)"
+        except Exception as exc:
+            return tab_id, False, f"{body} (UNVERIFIED: list unreachable: {exc})".strip()[:120]
         if tab_id in live:
             return tab_id, False, "close returned 200 but target still listed"
         return tab_id, True, body
@@ -70,8 +75,8 @@ def main(argv=None):
     ap.add_argument("ids_file")
     ap.add_argument("--port", default="9222")
     ap.add_argument("--host", default=DEFAULT_HOST)
-    ap.add_argument("--expect", default="",
-                    help="CDP /json/list dump for pre-close revalidation")
+    ap.add_argument("--expect", default="", required=True,
+                    help="REQUIRED: CDP /json/list dump for pre-close revalidation")
     ap.add_argument("--browser", default="")
     ap.add_argument("--endpoint", default="")
     args = ap.parse_args(argv)
@@ -79,6 +84,18 @@ def main(argv=None):
     try:
         port = validate_port(args.port)
         host = validate_host(args.host)
+    except ValueError as exc:
+        raise SystemExit(str(exc))
+
+    if not args.expect:
+        raise SystemExit("refusing close: --expect is required (no blind close by id)")
+
+    # Validate endpoint identity before touching any tab: a reused port
+    # may host a different CDP service. --browser makes the check strict
+    # (product must mention it); without it we still require /json/version
+    # to answer so we know SOMETHING chromium debugs that port.
+    try:
+        check_endpoint_identity(host, port, expect_browser=args.browser or "")
     except ValueError as exc:
         raise SystemExit(str(exc))
 
@@ -93,45 +110,73 @@ def main(argv=None):
         raise SystemExit("duplicate ids in file; fix the close list first")
 
     endpoint = args.endpoint or f"{host}:{port}"
-    if args.expect:
-        ep = Path(args.expect)
-        if not ep.is_file():
-            raise SystemExit(f"not a file: {args.expect}")
-        with open(ep, encoding="utf-8") as fh:
-            before = parse_cdp_list(json.load(fh), endpoint=endpoint,
-                                    browser=args.browser)
-        # refresh live list for the identity check
-        try:
-            live_raw = fetch_list(host, port)
-            live = parse_cdp_list(live_raw, endpoint=endpoint,
-                                  browser=args.browser)
-        except Exception as exc:
-            raise SystemExit(f"cannot revalidate before close: {exc}")
-        cand_by_id = {t.id: t for t in before}
-        missing = [i for i in ids if i not in cand_by_id]
-        if missing:
-            raise SystemExit(
-                f"refusing close: {len(missing)} id(s) not in --expect dump "
-                f"(stale/forged close list?): {missing[:5]}")
-        candidates = [cand_by_id[i] for i in ids]
-        safe, problems = verify_close_candidates(candidates, live)
-        for prob in problems:
-            print(f"SKIP {prob}")
-        if len(safe) != len(candidates):
-            print(f"revalidation skipped {len(candidates) - len(safe)}/"
-                  f"{len(candidates)}", file=sys.stderr)
-        ids = [t.id for t in safe]
-        if not ids:
-            print("nothing safe to close after revalidation", file=sys.stderr)
-            sys.exit(0)
+    ep = Path(args.expect)
+    if not ep.is_file():
+        raise SystemExit(f"not a file: {args.expect}")
+    with open(ep, encoding="utf-8") as fh:
+        before = parse_cdp_list(json.load(fh), endpoint=endpoint,
+                                browser=args.browser)
+    # refresh live list for the identity check
+    try:
+        live_raw = fetch_list(host, port)
+        live = parse_cdp_list(live_raw, endpoint=endpoint,
+                              browser=args.browser)
+    except Exception as exc:
+        raise SystemExit(f"cannot revalidate before close: {exc}")
+    cand_by_id = {t.id: t for t in before}
+    missing = [i for i in ids if i not in cand_by_id]
+    if missing:
+        raise SystemExit(
+            f"refusing close: {len(missing)} id(s) not in --expect dump "
+            f"(stale/forged close list?): {missing[:5]}")
+    candidates = [cand_by_id[i] for i in ids]
+    safe, problems = verify_close_candidates(candidates, live)
+    for prob in problems:
+        print(f"SKIP {prob}")
+    if len(safe) != len(candidates):
+        print(f"revalidation skipped {len(candidates) - len(safe)}/"
+              f"{len(candidates)}", file=sys.stderr)
+    ids = [t.id for t in safe]
+    if not ids:
+        print("nothing safe to close after revalidation", file=sys.stderr)
+        sys.exit(0)
+
+    # Post-close: confirm the close set actually disappeared and nothing
+    # else closed. Unexpected closures => non-zero exit (safety signal).
+    from sweep_lib import diff_tab_sets as _diff
+    before_by_id = {t.id: t for t in before}
 
     ok = 0
+    closed_ids: list[str] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=20) as pool:
         for tab_id, done, msg in pool.map(
                 lambda i: close_one(host, port, i), ids):
             print(f"{'CLOSED' if done else 'FAILED'} {tab_id} {msg[:80]}")
             ok += done
+            if done:
+                closed_ids.append(tab_id)
     print(f"closed ok: {ok}/{len(ids)}", file=sys.stderr)
+    # Before/after set comparison: anything from the close set still open
+    # or anything outside it that vanished => failure.
+    try:
+        after_raw = fetch_list(host, port)
+        after = parse_cdp_list(after_raw, endpoint=endpoint,
+                               browser=args.browser)
+        diff = _diff(list(before_by_id.values()), after, set(closed_ids))
+        if diff["still_open_from_close_set"]:
+            print(f"FAILED still open: {diff['still_open_from_close_set'][:5]}",
+                  file=sys.stderr)
+        if diff["unexpectedly_closed"]:
+            print(f"FAILED unexpectedly closed: {diff['unexpectedly_closed'][:5]}",
+                  file=sys.stderr)
+        if diff["still_open_from_close_set"] or diff["unexpectedly_closed"]:
+            sys.exit(1)
+    except SystemExit:
+        raise
+    except Exception as exc:
+        print(f"FAILED post-close verification unreachable: {exc}",
+              file=sys.stderr)
+        sys.exit(1)
     sys.exit(0 if ok == len(ids) else 1)
 
 
