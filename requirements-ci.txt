@@ -1,0 +1,5 @@
+# CI-only test dependencies (pinned; auto-updated by Dependabot weekly).
+# --only-binary: wheels only, no setup.py execution (Sonar S8541).
+--only-binary=:all:
+lz4==4.4.5
+pytest==9.1.1

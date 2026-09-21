@@ -1,0 +1,13 @@
+version: 2
+updates:
+  # CI-only Python deps (requirements-ci.txt). skills-ref itself is a
+  # SHA-pinned git URL inside lint.yml (Dependabot cannot track it) —
+  # bump that SHA by hand when the validator misbehaves or monthly.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

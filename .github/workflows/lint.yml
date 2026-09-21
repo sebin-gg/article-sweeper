@@ -58,6 +58,10 @@ jobs:
         with:
           python-version: "3.14"
       - name: Install test deps
-        run: pip install lz4 pytest
+        run: pip install -r requirements-ci.txt
+      - name: Install skill validator
+        # NOSONAR githubactions:S8541 -- VCS installs have no wheels by
+        # definition; ref is SHA-pinned (locked) and reviewed on bump.
+        run: pip install "skills-ref @ git+https://github.com/agentskills/agentskills.git@69ef37e9424c0a7ea9dd2293b559e43ec8176379#subdirectory=skills-ref"
       - name: Behavioral tests (mocked CDP / Firefox fixtures)
         run: python -m pytest tests/ -q

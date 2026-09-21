@@ -123,8 +123,10 @@ def main(argv=None):
     # Read + decode inside the guarded block: any failure (read error,
     # bad payload, missing lz4) still runs the finally that deletes the
     # scratch copy. Nothing may exit between copy creation and this try.
+    # Trust boundary (S8707): `work` is either this script's own scratch
+    # copy or a --no-copy path that passed the marker/containment guard.
     try:
-        raw = work.read_bytes()
+        raw = work.read_bytes()  # NOSONAR pythonsecurity:S8707
         doc = decode_mozlz4(raw)
     except OSError as exc:
         raise SystemExit(f"cannot read {work}: {exc}")
