@@ -23,6 +23,8 @@ jobs:
         run: |
           pip install --only-binary=:all: --require-hashes -r requirements-ci.txt
           agentskills validate article-sweeper
+        # (block scalar: the ":" in --only-binary=:all: would break a
+        # plain scalar)
       - name: Lint skill
         run: |
           python - <<'EOF'
@@ -60,6 +62,6 @@ jobs:
         with:
           python-version: "3.14"
       - name: Install test deps (hash-locked)
-        run: pip install --only-binary=:all: --require-hashes -r requirements-ci.txt
+        run: "pip install --only-binary=:all: --require-hashes -r requirements-ci.txt"
       - name: Behavioral tests (mocked CDP / Firefox fixtures)
         run: python -m pytest tests/ -q
