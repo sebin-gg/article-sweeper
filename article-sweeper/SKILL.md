@@ -4,7 +4,7 @@ description: Summarize open article tabs in Thorium, Chromium, Chrome, Brave, Ed
 license: MIT
 allowed-tools: Bash Read Edit Write Task WebFetch WebSearch
 metadata:
-  version: "1.3.2"
+  version: "1.3.3"
   tags: "browser,tabs,summarize,thorium,chromium,firefox"
 ---
 
@@ -110,9 +110,10 @@ done
 - Firefox: read `references/firefox.md` for profile paths, decode script.
   `references/dev-mode.md` covers restarts for both families.
 - Cross-browser claim: only Chromium CDP + Firefox session parsing are
-  implemented here; other Chromium derivatives are treated as
+  implemented here; Chrome and Edge are verified end-to-end (see
+  `references/chromium.md`), other Chromium derivatives remain
   Chromium-compatible *pending per-browser verification* (list → close
-  one test tab → recount) — see `references/chromium.md`.
+  one test tab → recount).
 
 ## 2. Enumerate live tabs (preferred)
 

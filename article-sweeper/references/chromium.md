@@ -4,13 +4,22 @@ Read this file only when the target browser is Thorium, Chromium, Chrome,
 Brave, Edge, Vivaldi, or Opera.
 
 > Compatibility note: only Chromium CDP plus Firefox session parsing are
-> directly implemented and tested here. Thorium, Brave, Edge, Vivaldi, and
-> Opera are treated as *Chromium-compatible pending verification*: they
-> usually expose the same `/json/list` + `/json/close/<id>` surface, but
-> vendor binaries, profile layouts, and CDP behavior differ. Verify per
-> browser (list → close one test tab → recount) before sweeping it, and
-> record the result in the run report. Do not claim an unverified browser
-> "works". There is no single end-to-end `sweep` executable by design:
+> directly implemented and tested here. Thorium, Brave, Vivaldi, and Opera
+> remain *Chromium-compatible pending verification*: they usually expose
+> the same `/json/list` + `/json/close/<id>` surface, but vendor binaries,
+> profile layouts, and CDP behavior differ. Verify per browser
+> (list → close one test tab → recount) before sweeping it, and record
+> the result in the run report. Do not claim an unverified browser
+> "works".
+>
+> Verified 2026-09-21 (Windows 10, headless, dedicated `--user-data-dir`,
+> own loopback port, `--browser` identity match, close-one `1/1` exit 0,
+> live recount 0 pages):
+>
+> - Chrome `Chrome/153.0.8010.53` on port 9224.
+> - Edge `Edg/153.0.4234.48` on port 9226 (product alias `edg/` exercised).
+>
+> There is no single end-to-end `sweep` executable by design:
 > summarization needs agent judgment, so the repo ships deterministic
 > primitives (enumerate → classify → append → close) plus the SKILL.md
 > orchestration instead of one opaque command.

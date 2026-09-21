@@ -3,6 +3,17 @@
 All notable changes to this skill follow Keep a Changelog. Versions use
 semver and match `metadata.version` in SKILL.md frontmatter.
 
+## [1.3.3] - 2026-09-21
+
+Verified:
+
+- Chrome `Chrome/153.0.8010.53` and Edge `Edg/153.0.4234.48` verified
+  end-to-end on Windows (headless, dedicated `--user-data-dir`, own
+  loopback ports 9224/9226): list → close-one (`1/1`, exit 0) → live
+  recount 0 pages, with `--browser` identity match (Edge exercised the
+  `edg/` product alias). Recorded in `references/chromium.md`.
+  Thorium, Brave, Vivaldi, Opera remain pending per-browser verification.
+
 ## [1.3.2] - 2026-09-21
 
 Fixed:
