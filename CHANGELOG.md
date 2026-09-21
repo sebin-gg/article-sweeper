@@ -3,6 +3,36 @@
 All notable changes to this skill follow Keep a Changelog. Versions use
 semver and match `metadata.version` in SKILL.md frontmatter.
 
+## [1.3.10] - 2026-09-21
+
+Fixed:
+
+- `cdp_close.py --allow-last-tab`: when every close applies and the
+  endpoint then disappears (verified live behavior of browsers that
+  exit on their last page close), the run now reports `allowed
+  last-tab shutdown` and exits 0 instead of failing as UNVERIFIED —
+  matching the documented contract. Any other unreachable-endpoint
+  failure still fails closed.
+
+Added:
+
+- Runtime ambiguity notice: when `--browser chrome|chromium` passes on
+  a `Chrome/...` product string without `--expect-cmd`, cdp_close
+  warns that vendor-blind forks share that string and recommends the
+  process-ownership proof. CDP cannot cryptographically distinguish
+  real Chrome from such forks; the notice states the limit instead of
+  overclaiming identity.
+
+Changed:
+
+- SKILL.md verification status synced with reality: all seven
+  `DEFAULT_PORTS` Chromium-family browsers verified end-to-end on
+  Windows (previously claimed "Chrome and Edge verified, rest
+  pending").
+- Dependabot: dropped the pip ecosystem (deps are hash-locked in
+  `requirements-ci.txt`; bump via pip-compile) — fewer weekly PRs,
+  no duplicate automation.
+
 ## [1.3.9] - 2026-09-21
 
 Fixed:

@@ -16,7 +16,9 @@ import os
 import re
 import socket
 import tempfile
+import urllib.error
 import urllib.parse
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -1287,3 +1289,48 @@ def session_freshness(session_path: Path) -> dict:
     info["backup_newer"] = newest > mtime
     info["newest_backup"] = newest_name if info["backup_newer"] else None
     return info
+
+
+def endpoint_gone_confirmed(host: str, port: int, attempts: int = 3,
+                            timeout: float = 2.0) -> str | None:
+    """Classify whether a dev-mode endpoint is gone, and how sure we are.
+
+    Returns one of:
+    - "refused": TCP connection refused (RST - nothing listens). For a
+      dev-mode endpoint this means the browser process is provably dead.
+      Caveat: some Windows firewall configurations silently drop SYN to
+      dead ports, which surfaces as a timeout (None) instead - on such
+      hosts "refused" is simply never observed.
+    - "dead": TCP accepted but no HTTP response (connection closed or
+      reset mid-request). The mid-shutdown window of an exiting browser
+      looks like this; so does a wedged server, so this is evidence,
+      not proof. This is the classification real browser exits produce
+      on Windows (the listener's accept socket resets in-flight HTTP).
+    - "alive": endpoint answered a full HTTP request.
+    - None: inconclusive (timeout, unreachable host) - fail closed.
+    """
+    url = f"http://{host}:{port}/json/version"
+    state: str | None = None
+    for _ in range(max(1, attempts)):
+        try:
+            urllib.request.urlopen(url, timeout=timeout).close()
+            return "alive"  # endpoint answering again: not gone
+        except urllib.error.HTTPError:
+            return "alive"  # HTTP-level error still proves it serves HTTP
+        except ConnectionRefusedError:
+            state = "refused"
+        except urllib.error.URLError as exc:
+            reason = getattr(exc, "reason", None)
+            if isinstance(reason, ConnectionRefusedError):
+                state = "refused"
+            elif isinstance(reason, (ConnectionResetError,
+                                     ConnectionAbortedError)):
+                state = "dead"  # accepted-then-reset: dying peer
+            else:
+                return None  # timeout / other: inconclusive
+        except (ConnectionResetError, ConnectionAbortedError):
+            state = "dead"
+        except OSError:
+            if state != "refused":
+                return None
+    return state
