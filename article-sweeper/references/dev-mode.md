@@ -46,7 +46,12 @@ google-chrome --user-data-dir="$HOME/.config/google-chrome-sweeper" \
 Multiple Chromium-family browsers cannot share one debugging endpoint.
 Assign one loopback port per browser (defaults; probe with
 `curl -s http://127.0.0.1:<port>/json/version` and pick a free one on
-collision — `sweep_lib.endpoint_for()` implements this):
+collision — `sweep_lib.endpoint_for()` implements this). Port discovery
+has a TOCTOU gap (another process can claim a freed port before the
+browser binds it), so discovery is only a hint: always re-verify with
+`--check-endpoint`/`--browser` (and `--expect-cmd` where the workflow
+launched the browser itself) immediately before enumerating or closing —
+a reclaimed port fails validation and the run aborts.
 
 | Browser | Default port |
 | :--- | :---: |
@@ -61,7 +66,14 @@ collision — `sweep_lib.endpoint_for()` implements this):
 Record which endpoint each tab id came from (`list_cdp_tabs.py
 --endpoint 127.0.0.1:<port> --browser <name>`) and close only through
 that same endpoint (`cdp_close.py --host 127.0.0.1 --port <port>
---expect <fresh-list.json>`).
+--expect <fresh-list.json>`). `/json/version` product checks prove the
+browser *family* on a port, not the exact process: when this workflow
+launched the browser itself, additionally pass a command-line fragment
+(binary name or `--user-data-dir=…`) as `--expect-cmd` to `list_cdp_tabs.py
+--check-endpoint` / `cdp_close.py` — on Linux the listening PID's command
+line must contain it (`sweep_lib.verify_endpoint_process()`), otherwise
+the run aborts. Off Linux the flag fails closed; fall back to the
+product check plus the launch-time PID you recorded.
 
 ## Before any kill
 

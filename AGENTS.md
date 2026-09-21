@@ -6,7 +6,7 @@ Behavioral rules for AI agents working in this repository. Read this before touc
 
 - **Conventional Commits only:** `feat|fix|perf|docs|test|refactor|ci|chore|revert(scope):` (see `commitlint.config.cjs` if present). Don't use `--no-verify` unless it's genuinely broken.
 - **Never commit sensitive data:** scratch captures (`cdp*.json`, Firefox `*.copy.jsonlz4` session copies, dev logs) may contain tokens, document IDs, and invite codes in URLs. Never commit them. Prefer `--redact` and delete scratch at end of each run.
-- **Never push directly to `main` without tests:** the CI job (`python -m pytest tests/`) must pass before any merge. Run tests locally first (`python -m pytest tests/ -q`).
+- **Green tests before anything lands:** the CI job (`python -m pytest tests/`) must pass before any merge or push to `main`. Run tests locally first (`python -m pytest tests/ -q`). (Whether the change travels via PR or direct push is the convention in Push / PR below — the test gate applies either way.)
 - **Don't modify session files in place:** always copy the Firefox session file to scratch first (`copy_session_safe`). Never read a live session file directly.
 - **Never force-kill a browser:** `pkill -9` and bare `pkill <name>` can hit unrelated browser instances. Always identify the exact binary path before signaling, and use SIGTERM.
 - **Remote debugging is loopback-only by design:** connecting CDP to a logged-in session exposes accounts, cookies, and page content. Never bind to `0.0.0.0`.
@@ -33,7 +33,7 @@ The CI (`lint.yml`) runs skill-spec validation + lint + test on every push/PR.
 
 ## Test structure
 
-- `tests/test_sweep_lib.py` — behavioral tests with mocked CDP and Firefox session fixtures, plus a fake in-process CDP service for CLI integration. Covers: port/host validation, URL unwrap/canonicalize, dedupe, classifier, CDP parse/validation, endpoint identity (+vendor aliases), close candidate revalidation, diff sets, atomic append, recount-and-fix-header (incl. concurrent), Firefox decode + copy + read-failure cleanup, session freshness.
+- `tests/test_sweep_lib.py` — behavioral tests with mocked CDP and Firefox session fixtures, plus a fake in-process CDP service for CLI integration. Covers: port/host validation, URL unwrap/canonicalize, dedupe, classifier, CDP parse/validation,   endpoint identity (+vendor aliases, +process ownership), close candidate revalidation, diff sets, atomic append, recount-and-fix-header (incl. concurrent), Firefox decode + copy + read-failure cleanup, session freshness.
 - Add a test for every new rule in `sweep_lib.py`. No new behavior without a test.
 
 ## Push / PR (how changes land)

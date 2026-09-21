@@ -42,6 +42,7 @@ from sweep_lib import (  # noqa: E402
     validate_host,
     validate_port,
     verify_close_candidates,
+    verify_endpoint_process,
 )
 
 
@@ -84,6 +85,10 @@ def main(argv=None):
     ap.add_argument("--browser", default="", required=True,
                     help="REQUIRED: expected browser for /json/version identity")
     ap.add_argument("--endpoint", default="")
+    ap.add_argument("--expect-cmd", default="",
+                    help="optional: command-line fragment (binary or "
+                         "--user-data-dir) the listening process must show; "
+                         "Linux /proc check, fails closed when unsupported")
     args = ap.parse_args(argv)
 
     try:
@@ -102,6 +107,12 @@ def main(argv=None):
         check_endpoint_identity(host, port, expect_browser=args.browser)
     except ValueError as exc:
         raise SystemExit(str(exc))
+    if args.expect_cmd:
+        try:
+            owner = verify_endpoint_process(port, args.expect_cmd)
+        except (ValueError, RuntimeError) as exc:
+            raise SystemExit(f"endpoint process check failed: {exc}")
+        print(f"endpoint owner pid: {owner}", file=sys.stderr)
 
     ids_path = Path(args.ids_file)
     if not ids_path.is_file():

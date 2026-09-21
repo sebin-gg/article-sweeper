@@ -75,7 +75,15 @@ def cdp_url(host: str, port, path: str) -> str:
 
 
 def find_free_port(exclude: set[int] | None = None) -> int:
-    """Return a free loopback TCP port (per-browser endpoint discovery)."""
+    """Return a free loopback TCP port (per-browser endpoint discovery).
+
+    TOCTOU note: the socket is released before return, so another process
+    can claim the port before the browser binds it. This function is only
+    a *hint* for which port to try — it is NOT the isolation guarantee.
+    The guarantee is check_endpoint_identity() (plus --browser, plus the
+    optional process check) run immediately before operating: a port that
+    was reclaimed by something else fails validation and the run aborts.
+    """
     exclude = exclude or set()
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
@@ -582,6 +590,113 @@ def check_endpoint_identity(host: str, port: int, *,
                 f"endpoint {host}:{port} reports Browser={product!r}, "
                 f"expected browser containing {expect_browser!r}; refusing")
     return payload
+
+
+# ---------------------------------------------------------------------------
+# Endpoint process ownership (Linux /proc; optional hardening)
+# ---------------------------------------------------------------------------
+
+def _port_inodes(net_tcp_text: str, port: int) -> set[int]:
+    """Parse /proc/net/tcp content -> inodes of LISTEN sockets on `port`."""
+    inodes: set[int] = set()
+    for line in net_tcp_text.splitlines()[1:]:  # skip header
+        parts = line.split()
+        if len(parts) < 10:
+            continue
+        try:
+            _ip_hex, port_hex = parts[1].split(":")
+            st = parts[3]
+            inode = int(parts[9])
+        except (ValueError, IndexError):
+            continue
+        if st.upper() == "0A" and int(port_hex, 16) == port:
+            inodes.add(inode)
+    return inodes
+
+
+def find_pids_listening_on(port: int, *, proc_root: str = "/proc") -> list[int]:
+    """PIDs holding a LISTEN socket on `port` (Linux /proc only).
+
+    Product checks prove *which browser family* answers a port, not
+    *which process*. When the workflow launched the browser itself, this
+    maps the port back to owner PID(s) so the command line (binary,
+    --user-data-dir) can be confirmed. Raises RuntimeError off Linux.
+    `proc_root` is injectable for tests.
+    """
+    port = validate_port(port)
+    if os.name != "posix":
+        raise RuntimeError("process lookup needs Linux /proc")
+    tcp = os.path.join(proc_root, "net", "tcp")
+    try:
+        with open(tcp, encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError as exc:
+        raise RuntimeError(f"cannot read {tcp}: {exc}")
+    inodes = _port_inodes(text, port)
+    if not inodes:
+        return []
+    want = {f"socket:[{i}]" for i in inodes}
+    pids: list[int] = []
+    try:
+        entries = os.listdir(proc_root)
+    except OSError as exc:
+        raise RuntimeError(f"cannot list {proc_root}: {exc}")
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        fddir = os.path.join(proc_root, entry, "fd")
+        try:
+            fds = os.listdir(fddir)
+        except OSError:
+            continue  # raced exit / permission denied
+        for fd in fds:
+            try:
+                target = os.readlink(os.path.join(fddir, fd))
+            except OSError:
+                continue
+            if target in want:
+                pids.append(int(entry))
+                break
+    return sorted(pids)
+
+
+def read_process_cmdline(pid: int, *, proc_root: str = "/proc") -> str:
+    """NUL-joined command line of `pid` (Linux /proc only)."""
+    try:
+        with open(os.path.join(proc_root, str(int(pid)), "cmdline"),
+                  "rb") as fh:
+            raw = fh.read()
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"cannot read cmdline of pid {pid}: {exc}")
+    return raw.replace(b"\0", b" ").decode("utf-8", "replace").strip()
+
+
+def verify_endpoint_process(port: int, expect_cmd: str, *,
+                            proc_root: str = "/proc") -> int:
+    """Confirm a listener on `port` runs a command containing `expect_cmd`.
+
+    Pass a fragment of the launch command this workflow used (binary name
+    or `--user-data-dir=…`). Returns the matching PID. Raises ValueError
+    when nobody listens there or no owner's command line matches, and
+    RuntimeError where process lookup is unsupported. Fail closed.
+    """
+    want = (expect_cmd or "").strip().lower()
+    if not want:
+        raise ValueError("verify_endpoint_process needs a non-empty "
+                         "expected command fragment")
+    pids = find_pids_listening_on(port, proc_root=proc_root)
+    if not pids:
+        raise ValueError(f"no local process found listening on port {port}")
+    for pid in pids:
+        try:
+            cmd = read_process_cmdline(pid, proc_root=proc_root)
+        except RuntimeError:
+            continue
+        if want in cmd.lower():
+            return pid
+    raise ValueError(
+        f"port {port} held by pid(s) {pids} whose command lines do not "
+        f"mention {expect_cmd!r}; refusing")
 
 
 # ---------------------------------------------------------------------------

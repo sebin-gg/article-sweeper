@@ -27,6 +27,8 @@ from sweep_lib import (  # noqa: E402
     check_endpoint_identity,
     parse_cdp_list,
     redact_url,
+    validate_port,
+    verify_endpoint_process,
 )
 
 
@@ -41,6 +43,9 @@ def main(argv=None):
     ap.add_argument("--port", default="")
     ap.add_argument("--check-endpoint", action="store_true",
                     help="validate /json/version identity before printing")
+    ap.add_argument("--expect-cmd", default="",
+                    help="with --check-endpoint: command-line fragment the "
+                         "listening process must show (Linux /proc)")
     args = ap.parse_args(argv)
     if args.check_endpoint:
         if not args.host or not args.port:
@@ -54,6 +59,13 @@ def main(argv=None):
                                     expect_browser=args.browser)
         except ValueError as exc:
             raise SystemExit(str(exc))
+        if args.expect_cmd:
+            try:
+                owner = verify_endpoint_process(
+                    validate_port(args.port), args.expect_cmd)
+            except (ValueError, RuntimeError) as exc:
+                raise SystemExit(f"endpoint process check failed: {exc}")
+            print(f"endpoint owner pid: {owner}", file=sys.stderr)
     p = Path(args.cdp_json)
     if not p.is_file():
         raise SystemExit(f"not a file: {args.cdp_json}")

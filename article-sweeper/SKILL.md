@@ -4,7 +4,7 @@ description: Summarize open article tabs in Thorium, Chromium, Chrome, Brave, Ed
 license: MIT
 allowed-tools: Bash Read Edit Write Task WebFetch WebSearch
 metadata:
-  version: "1.2.0"
+  version: "1.3.0"
   tags: "browser,tabs,summarize,thorium,chromium,firefox"
 ---
 
@@ -234,9 +234,15 @@ python3 scripts/cdp_close.py ids.txt --host 127.0.0.1 --port <port> \
   --endpoint 127.0.0.1:<port>
 ```
 
+When this workflow launched the browser itself (Linux), also pass
+`--expect-cmd` with a launch command fragment (binary name or
+`--user-data-dir=…`): the listening PID's command line must contain it,
+tying the endpoint to the exact process, not just the browser family
+(see `references/dev-mode.md`).
+
 The script refuses ids missing from `--expect`, skips ids that vanished
-or navigated since approval (canonical-URL comparison), validates the
-endpoint answers `/json/version` (and matches `--browser` when given),
+or navigated since approval (canonical-URL comparison), requires the
+endpoint to answer `/json/version` with the `--browser` product match,
 and confirms each target disappeared afterwards — unverifiable closes
 (list unreachable) count as FAILED with non-zero exit. Afterwards run
 the before/after set comparison (`sweep_lib.diff_tab_sets()`): zero ids

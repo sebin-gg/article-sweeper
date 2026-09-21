@@ -3,6 +3,25 @@
 All notable changes to this skill follow Keep a Changelog. Versions use
 semver and match `metadata.version` in SKILL.md frontmatter.
 
+## [1.3.0] - 2026-09-21
+
+Added:
+
+- Process-level endpoint ownership: `sweep_lib.verify_endpoint_process()`
+  maps a debug port to owner PID(s) via Linux `/proc` and matches the
+  command line against an expected fragment. Opt-in via `--expect-cmd`
+  on `cdp_close.py` and `list_cdp_tabs.py --check-endpoint`; fails
+  closed where process lookup is unsupported.
+
+Fixed:
+
+- README no longer promises absolutes for non-articles ("never
+  summarized/never closed") — states baseline + scope-rule exclusion.
+- AGENTS.md test-gate wording no longer contradicts the PR-convention
+  note.
+- `find_free_port()` documents its TOCTOU limit and names the identity
+  re-check as the actual enforcement; dev-mode.md repeats it.
+
 ## [1.2.0] - 2026-09-21
 
 Breaking:

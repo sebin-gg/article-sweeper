@@ -1,5 +1,6 @@
 """Behavioral tests for sweep_lib + script CLIs (mocked CDP/Firefox fixtures)."""
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -30,6 +31,9 @@ from sweep_lib import (  # noqa: E402
     recount_entries,
     browser_matches_product,
     check_endpoint_identity,
+    find_pids_listening_on,
+    read_process_cmdline,
+    verify_endpoint_process,
     redact_url,
     session_freshness,
     unwrap_tracking_wrapper,
@@ -176,6 +180,44 @@ def test_browser_product_aliases():
         "127.0.0.1", 9226, expect_browser="edge",
         fetch_version=lambda h, p: {"Browser": "Edg/140.0.0.0"})
     assert out["Browser"].startswith("Edg")
+
+
+def test_port_inodes_parses_listen_sockets():
+    import sweep_lib
+    text = ("  sl  local_address rem_address   st tx_queue:rx_queue "
+            "tr:tm->when retrnsmt   uid  timeout inode\n"
+            "   0: 0100007F:1F90 00000000:0000 0A 00000000:00000000 "
+            "00:00000000 00000000     0        0 12345 1 0000000000000000 100 0 0 10 0\n"
+            "   1: 0100007F:0050 00000000:0000 0A 00000000:00000000 "
+            "00:00000000 00000000     0        0 999 1 0000000000000000 100 0 0 10 0\n"
+            "   2: 0100007F:1F90 0100007F:1F91 01 00000000:00000000 "
+            "00:00000000 00000000     0        0 777 1 0000000000000000 100 0 0 10 0\n")
+    assert sweep_lib._port_inodes(text, 8080) == {12345}  # 0x1F90; ESTABLISHED ignored
+
+
+@pytest.mark.skipif(os.name != "posix", reason="fake /proc tree needs POSIX symlinks")
+def test_verify_endpoint_process_against_fake_proc(tmp_path):
+    proc = tmp_path / "proc"
+    (proc / "net").mkdir(parents=True)
+    (proc / "net" / "tcp").write_text(
+        "  sl  local_address rem_address   st tx_queue:rx_queue tr:tm->when retrnsmt   uid  timeout inode\n"
+        "   0: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 424242 1 0000000000000000 100 0 0 10 0\n",
+        encoding="utf-8")
+    pid_dir = proc / "4242"
+    (pid_dir / "fd").mkdir(parents=True)
+    os.symlink("socket:[424242]", pid_dir / "fd" / "3")
+    (pid_dir / "cmdline").write_bytes(b"brave\0--user-data-dir=/x/sweeper\0")
+    root = str(proc)
+    assert find_pids_listening_on(8080, proc_root=root) == [4242]
+    assert "user-data-dir" in read_process_cmdline(4242, proc_root=root)
+    assert verify_endpoint_process(8080, "user-data-dir=/x", proc_root=root) == 4242
+    with pytest.raises(ValueError):
+        verify_endpoint_process(8080, "chrome", proc_root=root)
+    with pytest.raises(ValueError):
+        verify_endpoint_process(8080, "", proc_root=root)
+    assert find_pids_listening_on(9999, proc_root=root) == []
+    with pytest.raises(ValueError):
+        verify_endpoint_process(9999, "brave", proc_root=root)
 
 
 def test_cdp_url_brackets_ipv6():
@@ -798,3 +840,20 @@ def test_cdp_close_wrong_browser_and_dead_port(tmp_path):
              "--port", str(dead), "--expect", str(exp),
              "--browser", "chrome")
     assert r2.returncode != 0 and "unreachable" in (r2.stderr + r2.stdout)
+
+
+def test_cdp_close_expect_cmd_mismatch_refuses(tmp_path):
+    tabs = {"A": {"id": "A", "type": "page",
+                  "url": "https://ex.com/a", "title": "A"}}
+    with FakeCDP("Chrome/140.0.0.0", tabs) as cdp:
+        exp = tmp_path / "expect.json"
+        cdp.dump_list(exp)
+        ids = tmp_path / "ids.txt"
+        ids.write_text("A\n", encoding="utf-8")
+        r = run("cdp_close.py", str(ids), "--host", "127.0.0.1",
+                "--port", str(cdp.port), "--expect", str(exp),
+                "--browser", "chrome",
+                "--expect-cmd", "definitely-not-this-process-xyz")
+        assert r.returncode != 0 and "process check failed" in (
+            r.stderr + r.stdout)
+        assert cdp.closed_puts == []  # refused before any close

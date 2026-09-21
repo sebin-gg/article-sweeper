@@ -19,7 +19,7 @@
   browser; derivatives treated as Chromium-compatible pending a
   list → close-one → recount check), Firefox via read-only
   `sessionstore.jsonlz4` decode (safe copy + staleness warnings).
-- **Article-only**: mail, chats, repos, dashboards, trackers, and adult pages stay open, never summarized.
+- **Article-only**: mail, chats, repos, dashboards, trackers, and adult pages are excluded by the deterministic baseline and stay open under the skill's scope rules — they are not summarized and their tabs never enter the close set.
 - **Append-only notes**: entries go to `~/Desktop/summary article YYYY-MM-DD.txt`. Creates when missing, never overwrites; atomic locked appends with an authoritative recount.
 - **Safe close**: Chromium tabs revalidated (same canonical URL) immediately before close with disappearance checks; verifies the rest stayed open. Firefox tabs close by hand from a printed list.
 - **Dev-mode restart**: backup first, per-browser loopback ports, session-restore check against the vendor's actual schema, no `pkill -9`, no session-file deletes. Note: Chrome 136+ needs a dedicated `--user-data-dir` for remote debugging — the live default profile cannot be CDP-attached in place.
@@ -144,7 +144,7 @@ Firefox profiles live under `~/.mozilla/firefox/` or
 <details>
 <summary><b>Will it close my mail, chats, or repos?</b></summary>
 
-No. Non-articles are never summarized and never closed. Only summarized article tabs close.
+No. Non-articles are excluded by the deterministic baseline and never enter the close set under the skill's scope rules — only summarized article tabs close. (Classification is baseline plus agent judgment, so always glance at the close list before confirming.)
 
 </details>
 
