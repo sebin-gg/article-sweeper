@@ -26,6 +26,7 @@ from sweep_lib import (  # noqa: E402
     is_internal_target,
     parse_cdp_list,
     pick_current_entry,
+    recount_and_fix_header,
     recount_entries,
     redact_url,
     session_freshness,
@@ -238,6 +239,27 @@ def test_atomic_append_and_recount(tmp_path):
     assert recount_entries(f) == 2
 
 
+def test_recount_and_fix_header_rewrites_stale_count(tmp_path):
+    f = tmp_path / "summary.txt"
+    f.write_text(
+        "# head\n\n5 article tabs summarised. Non-article tabs left open.\n\n"
+        "## A\nLink: x\n---\n## B\nLink: y\n---\n",
+        encoding="utf-8")
+    assert recount_and_fix_header(f) == 2
+    text = f.read_text(encoding="utf-8")
+    assert "2 article tabs summarised." in text
+    assert "5 article tabs summarised." not in text
+    assert recount_entries(f) == 2
+
+
+def test_recount_and_fix_header_no_header_untouched(tmp_path):
+    g = tmp_path / "noheader.txt"
+    g.write_text("## X\n", encoding="utf-8")
+    assert recount_and_fix_header(g) == 1
+    assert g.read_text(encoding="utf-8") == "## X\n"
+    assert recount_and_fix_header(tmp_path / "missing.txt") == 0
+
+
 # --- Firefox ------------------------------------------------------------------
 
 def make_session_bytes():
@@ -403,3 +425,25 @@ def test_decode_cli_copies_and_warns(tmp_path):
     assert r.returncode == 0
     assert "safe copy" in r.stderr
     assert "TOTAL TABS: 2" in r.stderr  # empty-entries tab skipped
+
+
+def test_decode_cli_cleans_copy_on_read_failure(tmp_path, monkeypatch):
+    # safe copy created -> read fails -> scratch copy still deleted
+    import decode_firefox_session as dfs
+    src = tmp_path / "sessionstore.jsonlz4"
+    src.write_bytes(make_session_bytes())
+    scratch = tmp_path / "scratch"
+    real_read_bytes = Path.read_bytes
+    calls = {"n": 0}
+
+    def flaky(self):
+        calls["n"] += 1
+        if calls["n"] >= 2:  # call 1 is the copy-verify read; 2 is main's
+            raise OSError("disk gone")
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", flaky)
+    with pytest.raises(SystemExit) as excinfo:
+        dfs.main([str(src), "--scratch", str(scratch)])
+    assert "cannot read" in str(excinfo.value)
+    assert list(scratch.glob("*")) == []

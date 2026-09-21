@@ -58,8 +58,8 @@ summary. No names = all detected browsers swept.
    takeaway.
 4. It appends the entries to `~/Desktop/summary article YYYY-MM-DD.txt`. It
    creates the file when missing and never overwrites existing files.
-   Concurrent batches append under lock; the header count is recounted
-   authoritatively at the end.
+   Concurrent batches append under lock; `recount_and_fix_header()` rewrites
+   the header count to the true entry count at the end.
 5. It closes only the summarized Chromium tabs (`--expect` revalidation
    by canonical URL immediately before close is required, endpoint
    identity checked, disappearance confirmed, unverifiable closes fail)

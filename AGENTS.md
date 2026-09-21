@@ -25,14 +25,15 @@ Behavioral rules for AI agents working in this repository. Read this before touc
 ```powershell
 python -m pytest tests/ -q          # behavioral suite (mocked CDP + Firefox fixtures)
 python -m compileall -q article-sweeper/scripts  # all scripts compile cleanly
-python -c "import re; from pathlib import Path; root=Path('article-sweeper'); text=(root/'SKILL.md').read_text(); fm=text.split('---')[1]; name=re.search(r'^name:\s*(\S+)',fm,re.M).group(1); assert name==root.name; v=re.search(r'^\s*version:\s*(\S+)',fm,re.M).group(1); assert '['+v+']' in Path('CHANGELOG.md').read_text()"  # skill lint
+skills-ref validate article-sweeper  # official spec validator (pip install from agentskills/agentskills#skills-ref)
+python -c "import re; from pathlib import Path; root=Path('article-sweeper'); text=(root/'SKILL.md').read_text(); fm=text.split('---')[1]; name=re.search(r'^name:\s*(\S+)',fm,re.M).group(1); assert name==root.name; v=re.search(r'^\s*version:\s*[\"'']?([^\s\"'']+)',fm,re.M).group(1); assert '['+v+']' in Path('CHANGELOG.md').read_text()"  # skill lint
 ```
 
-The CI (`lint.yml`) runs both lint + test on every push/PR.
+The CI (`lint.yml`) runs skill-spec validation + lint + test on every push/PR.
 
 ## Test structure
 
-- `tests/test_sweep_lib.py` — behavioral tests with mocked CDP and Firefox session fixtures. Covers: port/host validation, URL unwrap/canonicalize, dedupe, classifier, CDP parse/validation, close candidate revalidation, diff sets, atomic append, Firefox decode + copy, session freshness.
+- `tests/test_sweep_lib.py` — behavioral tests with mocked CDP and Firefox session fixtures. Covers: port/host validation, URL unwrap/canonicalize, dedupe, classifier, CDP parse/validation, close candidate revalidation, diff sets, atomic append, recount-and-fix-header, Firefox decode + copy + read-failure cleanup, session freshness.
 - Add a test for every new rule in `sweep_lib.py`. No new behavior without a test.
 
 ## Push / PR (how changes land)

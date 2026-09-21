@@ -102,12 +102,14 @@ def main(argv=None):
         print(f"decoded safe copy: {work} (live file untouched)",
               file=sys.stderr)
 
+    # Read + decode inside the guarded block: any failure (read error,
+    # bad payload, missing lz4) still runs the finally that deletes the
+    # scratch copy. Nothing may exit between copy creation and this try.
     try:
         raw = work.read_bytes()
+        doc = decode_mozlz4(raw)
     except OSError as exc:
         raise SystemExit(f"cannot read {work}: {exc}")
-    try:
-        doc = decode_mozlz4(raw)
     except RuntimeError as exc:
         raise SystemExit(str(exc))
     except ValueError as exc:

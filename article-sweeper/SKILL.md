@@ -4,8 +4,8 @@ description: Summarize open article tabs in Thorium, Chromium, Chrome, Brave, Ed
 license: MIT
 allowed-tools: Bash Read Edit Write Task WebFetch WebSearch
 metadata:
-  version: 1.1.0
-  tags: ["browser", "tabs", "summarize", "thorium", "chromium", "firefox"]
+  version: "1.1.1"
+  tags: "browser,tabs,summarize,thorium,chromium,firefox"
 ---
 
 # Article Sweeper
@@ -205,9 +205,10 @@ Protected / left open (non-articles, not summarised):
   + rename for create, locked append for batches; lock is mandatory on
   all platforms via `fcntl.flock` on POSIX and `msvcrt.locking` on
   Windows, never a silent no-op), so parallel subagents
-  cannot interleave. After all batches, authoritative
-  `sweep_lib.recount_entries()` fixes the header count; verify with
-  `grep -c '^## ' <file>`.
+   cannot interleave. After all batches, authoritative
+   `sweep_lib.recount_and_fix_header()` recounts the `## ` entries and
+   rewrites the header count line to the true count; verify with
+   `grep -c '^## ' <file>`.
 
 ## 6. Close only summarized tabs
 

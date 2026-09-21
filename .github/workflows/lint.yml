@@ -17,6 +17,10 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
+      - name: Official skill validator (skills-ref)
+        run: |
+          pip install "git+https://github.com/agentskills/agentskills.git#subdirectory=skills-ref"
+          skills-ref validate article-sweeper
       - name: Lint skill
         run: |
           python - <<'EOF'
@@ -38,7 +42,8 @@ jobs:
                           "scripts/cdp_close.py",
                           "scripts/decode_firefox_session.py"):
               compile((root / script).read_text(encoding="utf-8"), script, "exec")
-          version = re.search(r"^\s*version:\s*(\S+)", frontmatter, re.M).group(1)
+          version = re.search(r"^\s*version:\s*[\"']?([^\s\"']+)",
+                              frontmatter, re.M).group(1)
           changelog = Path("CHANGELOG.md").read_text(encoding="utf-8")
           assert f"[{version}]" in changelog, \
               f"CHANGELOG has no entry for version {version}"

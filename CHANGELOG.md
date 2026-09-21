@@ -3,6 +3,26 @@
 All notable changes to this skill follow Keep a Changelog. Versions use
 semver and match `metadata.version` in SKILL.md frontmatter.
 
+## [1.1.1] - 2026-09-21
+
+Fixed:
+
+- SKILL.md frontmatter is spec-conformant: `version` is a quoted string
+  and `tags` a comma-separated string (the flow-style array failed
+  `skills-ref validate`).
+- `decode_firefox_session.py` now deletes the scratch copy even when the
+  copy's own read fails (read moved inside the guarded try/finally).
+- The recount claim is now literally true: new
+  `sweep_lib.recount_and_fix_header()` recounts `## ` entries and rewrites
+  the header count line atomically (SKILL.md and README name the helper).
+
+Added:
+
+- `skills-ref validate article-sweeper` (official spec validator) as a CI
+  step and in the AGENTS.md verify block.
+- Regression tests: read-failure copy cleanup, header rewrite/untouched
+  cases; version lint tolerates quoted versions.
+
 ## [1.1.0] - 2026-09-20
 
 Added:

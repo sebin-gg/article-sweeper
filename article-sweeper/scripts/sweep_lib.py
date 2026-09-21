@@ -620,6 +620,44 @@ def recount_entries(path: Path) -> int:
     return sum(1 for line in text.splitlines() if line.startswith("## "))
 
 
+HEADER_COUNT_RE = re.compile(r"^(\d+)(\s+article tabs summarised\.)", re.M)
+
+
+def recount_and_fix_header(path: Path) -> int:
+    """Recount '## ' entries AND rewrite the header count line to match.
+
+    Batch appends each carry mutable "N article tabs summarised" metadata,
+    so the header can disagree with the file. This helper counts the
+    entries, rewrites the first `<digits> article tabs summarised.` line
+    to the true count (atomic temp-file + replace), and returns the
+    count. Files without such a header line are left untouched.
+    Run after all batches have appended (single writer at that point).
+    """
+    p = Path(path)
+    try:
+        text = p.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return 0
+    n = sum(1 for line in text.splitlines() if line.startswith("## "))
+    new_text, subs = HEADER_COUNT_RE.subn(
+        lambda m: f"{n}{m.group(2)}", text, count=1)
+    if not subs:
+        return n
+    tmp = tempfile.NamedTemporaryFile(
+        "w", dir=str(p.parent), delete=False, encoding="utf-8")
+    try:
+        tmp.write(new_text)
+        tmp.close()
+        os.replace(tmp.name, str(p))
+    except BaseException:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+        raise
+    return n
+
+
 # ---------------------------------------------------------------------------
 # Firefox session helpers
 # ---------------------------------------------------------------------------
