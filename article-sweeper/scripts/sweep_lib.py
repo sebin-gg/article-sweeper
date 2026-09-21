@@ -670,13 +670,15 @@ def find_pids_listening_on(port: int, *, proc_root: str = "/proc") -> list[int]:
     port = validate_port(port)
     if os.name != "posix":
         raise RuntimeError("process lookup needs Linux /proc")
-    tcp = os.path.join(proc_root, "net", "tcp")
-    try:
-        with open(tcp, encoding="utf-8") as fh:
-            text = fh.read()
-    except OSError as exc:
-        raise RuntimeError(f"cannot read {tcp}: {exc}")
-    inodes = _port_inodes(text, port)
+    inodes: set[int] = set()
+    for table in ("net/tcp", "net/tcp6"):  # IPv6 listeners live in tcp6
+        path = os.path.join(proc_root, table)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+        except OSError:
+            continue  # table absent (e.g. IPv6 disabled) is not fatal
+        inodes |= _port_inodes(text, port)
     if not inodes:
         return []
     want = {f"socket:[{i}]" for i in inodes}

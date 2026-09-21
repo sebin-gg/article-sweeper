@@ -232,8 +232,17 @@ def test_verify_endpoint_process_against_fake_proc(tmp_path):
     (pid_dir / "fd").mkdir(parents=True)
     os.symlink("socket:[424242]", pid_dir / "fd" / "3")
     (pid_dir / "cmdline").write_bytes(b"brave\0--user-data-dir=/x/sweeper\0")
+    # IPv6 listeners live in net/tcp6 only: second owner via ::1 socket
+    (proc / "net" / "tcp6").write_text(
+        "  sl  local_address rem_address   st tx_queue:rx_queue tr:tm->when retrnsmt   uid  timeout inode\n"
+        "   0: 00000000000000000000000000000001:1F90 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 555555 1 0000000000000000 100 0 0 10 0\n",
+        encoding="utf-8")
+    pid6_dir = proc / "4343"
+    (pid6_dir / "fd").mkdir(parents=True)
+    os.symlink("socket:[555555]", pid6_dir / "fd" / "3")
+    (pid6_dir / "cmdline").write_bytes(b"brave\0--user-data-dir=/x/sweeper6\0")
     root = str(proc)
-    assert find_pids_listening_on(8080, proc_root=root) == [4242]
+    assert find_pids_listening_on(8080, proc_root=root) == [4242, 4343]
     assert "user-data-dir" in read_process_cmdline(4242, proc_root=root)
     assert verify_endpoint_process(8080, "user-data-dir=/x", proc_root=root) == 4242
     with pytest.raises(ValueError):

@@ -3,6 +3,15 @@
 All notable changes to this skill follow Keep a Changelog. Versions use
 semver and match `metadata.version` in SKILL.md frontmatter.
 
+## [1.3.2] - 2026-09-21
+
+Fixed:
+
+- `find_pids_listening_on()` also reads `/proc/net/tcp6`: IPv6 (`::1`)
+  listeners are invisible in `/proc/net/tcp`, so `--expect-cmd` used to
+  fail closed on IPv6 endpoints. Regression test covers a tcp6-only
+  owner (plus a live `::1` socket check).
+
 ## [1.3.1] - 2026-09-21
 
 Added:
