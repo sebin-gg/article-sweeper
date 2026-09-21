@@ -171,6 +171,15 @@ does NOT merge — AMP variants, share-token params (e.g. `?sk=`), author
 subdomains — stay separate entries for your judgment: summarize once,
 and record every duplicate tab id so all of them close later.
 
+Leave-open selection must respect `sweep_lib.last_page_guard()`: if the
+article set would close **every** page tab a Chromium browser has open,
+hold one article-shaped tab back as leave-open (or ask the user).
+Verified live: closing a browser's last page tab exits the whole
+browser (Thorium), losing the endpoint and any tabs meant to stay open.
+`cdp_close.py` refuses such a close set by default; `--allow-last-tab`
+exists for the rare explicit user-approved shutdown, not for normal
+sweeps.
+
 ## 4. Summarize
 
 One entry per unique article. Plain sentences, no filler, summary as long as the article needs:

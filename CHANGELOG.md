@@ -29,6 +29,15 @@ Verified:
 - Full suite green on Windows (76 passed, 2 skipped) and WSL
   (78 passed, 0 skipped — the /proc-only process tests run on Linux).
 
+Documentation:
+
+- SKILL.md §3: leave-open selection must respect `last_page_guard()` —
+  hold one article-shaped tab back (or ask the user) when the close set
+  would empty a browser; `--allow-last-tab` is for explicit
+  user-approved shutdowns, not normal sweeps.
+- README: per-browser verification matrix for v1.3.8 (versions, ports,
+  identity mechanism, results) with the known vendor quirks.
+
 ## [1.3.7] - 2026-09-21
 
 Added:

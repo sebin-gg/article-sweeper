@@ -127,6 +127,34 @@ Linux stores Chromium profiles under `~/.config/<browser>/Default/`.
 macOS uses `~/Library/Application Support/<browser>/Default/`.
 Windows uses `%LOCALAPPDATA%\<browser>\User Data\Default\`.
 
+### Verification status (v1.3.8)
+
+All six Chromium-family browsers in `sweep_lib.DEFAULT_PORTS` were
+verified end-to-end on Windows 11 (dedicated `--user-data-dir`, own
+loopback port, `--browser` identity, close-one with `--expect`
+revalidation, live recount). "Vendor-blind" = the `/json/version`
+product string carries no vendor token, so identity requires the
+Windows process-ownership proof (`--expect-cmd`) or a UA/version
+signature; see `article-sweeper/references/chromium.md` for details.
+
+| Browser | Version verified | Port | Identity check | Result |
+| :--- | :--- | :---: | :--- | :--- |
+| Chrome | Chrome/153.0.8010.53 | 9224 | self-identifies (`Chrome/...`) | full pass |
+| Edge | Edg/153.0.4234.48 | 9226 | self-identifies (`Edg/` alias) | full pass |
+| Thorium | Chrome/138.0.7204.300 (binary 140) | 9222 | vendor-blind → process proof | full pass |
+| Vivaldi | Chrome/8.2.4133.68 (Chromium 152 base) | 9227 | vendor-blind → version-mismatch signature | full pass |
+| Opera | OPR/136.0.0.0 (Chromium 152) | 9228 | UA fallback (`OPR/` in User-Agent) | full pass |
+| Brave | Chrome/153.0.8010.53 | 9225 | vendor-blind → process proof | full pass |
+| Firefox | — | — | read-only session decode | not swept (by design) |
+
+Chromium-family browsers remain Chromium-compatible on Linux/macOS in
+principle, but only Thorium and Brave were additionally exercised on
+WSL; per-browser verification before sweeping is still the rule
+(`article-sweeper/references/chromium.md`). Known operational quirks:
+Thorium exits entirely when its last page tab closes (guard refuses by
+default), Vivaldi's first-run startup can take >60s before CDP answers,
+and Brave/Thorium report no vendor token at all.
+
 Firefox profiles live under `~/.mozilla/firefox/` or
 `~/.config/mozilla/firefox/` on Linux,
 `~/Library/Application Support/Firefox/Profiles/` on macOS, and
