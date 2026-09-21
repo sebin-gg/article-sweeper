@@ -5,6 +5,13 @@ semver and match `metadata.version` in SKILL.md frontmatter.
 
 ## [1.3.4] - 2026-09-21
 
+Fixed:
+
+- `cdp_close.py` polls the post-close list briefly (~3s) before failing:
+  real-browser finding that Thorium answers 200 while still listing the
+  target, with disappearance a beat later. Unreachable lists still fail
+  immediately as UNVERIFIED.
+
 Added:
 
 - Documented Chrome 144+ user-consent existing-session path

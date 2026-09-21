@@ -697,7 +697,8 @@ class FakeCDP:
     """Minimal in-process CDP service: /json/version, /json/list, PUT close."""
 
     def __init__(self, product, tabs, *, keep_on_close=False,
-                 fail_list_after_close=False, also_drop=()):
+                 fail_list_after_close=False, also_drop=(),
+                 close_delay_lists=0):
         import threading
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
         self.product = product
@@ -706,6 +707,10 @@ class FakeCDP:
         self.fail_list = False
         self.fail_list_after_close = fail_list_after_close
         self.also_drop = tuple(also_drop)
+        # async-close simulation (Thorium applies close with a delay:
+        # 200 OK while still listed for the next N /json/list reads)
+        self.close_delay_lists = close_delay_lists
+        self.pending_removals = {}  # tab_id -> lists remaining
         self.closed_puts = []
         state = self
 
@@ -730,6 +735,13 @@ class FakeCDP:
                     if state.fail_list:
                         self._send(500, "list down", "text/plain")
                     else:
+                        done = [tid for tid, n in
+                                state.pending_removals.items() if n <= 1]
+                        for tid in done:
+                            state.tabs.pop(tid, None)
+                            del state.pending_removals[tid]
+                        for tid in state.pending_removals:
+                            state.pending_removals[tid] -= 1
                         self._send(200, json.dumps(list(state.tabs.values())))
                 else:
                     self._send(404, "nope", "text/plain")
@@ -741,7 +753,11 @@ class FakeCDP:
                         self.path[len("/json/close/"):])
                     state.closed_puts.append(tab_id)
                     if tab_id in state.tabs and not state.keep_on_close:
-                        del state.tabs[tab_id]
+                        if state.close_delay_lists > 0:
+                            state.pending_removals[tab_id] = \
+                                state.close_delay_lists
+                        else:
+                            del state.tabs[tab_id]
                         for extra in state.also_drop:
                             state.tabs.pop(extra, None)
                     if state.fail_list_after_close:
@@ -845,6 +861,24 @@ def test_cdp_close_fails_when_target_stays_listed(tmp_path):
                 "--browser", "chrome")
         assert r.returncode != 0
         assert "still listed" in (r.stdout + r.stderr)
+
+
+def test_cdp_close_tolerates_async_close(tmp_path):
+    # real finding: Thorium answers 200 while still listing the target;
+    # disappearance follows a beat later. The CLI polls instead of
+    # failing on the first still-listed read.
+    tabs = {"A": {"id": "A", "type": "page",
+                  "url": "https://ex.com/a", "title": "A"}}
+    with FakeCDP("Chrome/140.0.0.0", tabs, close_delay_lists=2) as cdp:
+        exp = tmp_path / "expect.json"
+        cdp.dump_list(exp)
+        ids = tmp_path / "ids.txt"
+        ids.write_text("A\n", encoding="utf-8")
+        r = run("cdp_close.py", str(ids), "--host", "127.0.0.1",
+                "--port", str(cdp.port), "--expect", str(exp),
+                "--browser", "chrome")
+        assert r.returncode == 0, r.stderr + r.stdout
+        assert "closed ok: 1/1" in r.stderr
 
 
 def test_cdp_close_fails_when_post_close_list_unreachable(tmp_path):

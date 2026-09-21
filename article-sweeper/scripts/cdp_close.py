@@ -61,13 +61,26 @@ def close_one(host, port, tab_id, timeout=5):
         ) as resp:
             body = redact_url(resp.read().decode("utf-8", "replace"))[:80]
         # verify the target actually disappeared (not just HTTP 200).
+        # Some browsers apply the close asynchronously ("Target is closing"
+        # while still listed), so poll briefly before calling it failed.
         # Unverifiable == FAILED: a safety tool must not claim success
         # it could not prove.
-        try:
-            live = {d.get("id") for d in fetch_list(host, port)
-                    if isinstance(d, dict)}
-        except Exception as exc:
-            return tab_id, False, f"{body} (UNVERIFIED: list unreachable: {exc})".strip()[:120]
+        import time as _time
+        live = None
+        last_err = ""
+        for _ in range(12):  # ~3s total
+            try:
+                live = {d.get("id") for d in fetch_list(host, port)
+                        if isinstance(d, dict)}
+            except Exception as exc:
+                last_err = str(exc)[:80]
+                live = None
+                break  # unreachable: report below, no point polling
+            if tab_id not in live:
+                break
+            _time.sleep(0.25)
+        if live is None:
+            return tab_id, False, f"{body} (UNVERIFIED: list unreachable: {last_err})".strip()[:120]
         if tab_id in live:
             return tab_id, False, "close returned 200 but target still listed"
         return tab_id, True, body
