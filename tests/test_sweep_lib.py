@@ -252,6 +252,43 @@ def test_endpoint_identity_ua_fallback_ignores_generic_hint():
     assert _ua_fallback_matches("", ua) is False
 
 
+def test_vivaldi_version_mismatch_signature():
+    # Verified live (Windows, Vivaldi 8.2 / Chromium 152):
+    # Browser="Chrome/8.2.4133.68" (Vivaldi's own version) vs UA
+    # "Chrome/152.0.0.0" (real Chromium base). No vendor token anywhere.
+    from sweep_lib import _vivaldi_version_mismatch
+    assert _vivaldi_version_mismatch(
+        "vivaldi", "Chrome/8.2.4133.68",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36")
+    # Same-version fields (plain Chrome) must NOT match.
+    assert not _vivaldi_version_mismatch(
+        "vivaldi", "Chrome/152.0.7977.120",
+        "Mozilla/5.0 Chrome/152.0.0.0 Safari/537.36")
+    # Missing/unparsable version on either side fails closed.
+    assert not _vivaldi_version_mismatch("vivaldi", "", "Mozilla/5.0 Chrome/152.0.0.0")
+    assert not _vivaldi_version_mismatch("vivaldi", "Chrome/8.2.4133.68", "")
+    # Signature is exclusive to vivaldi: no other browser name may use it.
+    assert not _vivaldi_version_mismatch(
+        "chrome", "Chrome/8.2.4133.68", "Mozilla/5.0 Chrome/152.0.0.0")
+    from sweep_lib import check_endpoint_identity
+    payload = {"Browser": "Chrome/8.2.4133.68",
+               "User-Agent": "Mozilla/5.0 Chrome/152.0.0.0 Safari/537.36"}
+    out = check_endpoint_identity("127.0.0.1", 9227, expect_browser="vivaldi",
+                                  fetch_version=lambda h, p: dict(payload))
+    assert out["Browser"].startswith("Chrome/8")
+    # Same payload must still be refused for every branded browser —
+    # the mismatch signature must not become a generic bypass. (chrome and
+    # chromium are the exceptions: the endpoint self-reports
+    # Browser="Chrome/...", so --browser chrome/chromium legitimately
+    # match the generic family.)
+    for want in ("opera", "edge", "brave", "thorium"):
+        with pytest.raises(ValueError):
+            check_endpoint_identity(
+                "127.0.0.1", 9227, expect_browser=want,
+                fetch_version=lambda h, p, _d=payload: dict(_d))
+
+
 def test_port_inodes_parses_listen_sockets():
     import sweep_lib
     text = ("  sl  local_address rem_address   st tx_queue:rx_queue "

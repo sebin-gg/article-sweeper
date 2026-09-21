@@ -29,8 +29,21 @@ Brave, Edge, Vivaldi, or Opera.
 >   not exercised live yet (no real article tab was open).
 > - Thorium, Brave — verified in WSL (Thorium: async close behavior,
 >   see the 1.3.4 poll fix; Brave: command-line fragment check).
-> - Vivaldi — *partial*: close hung once (timeout) and later succeeded;
->   treated as async close application, not re-verified end-to-end.
+> - Vivaldi `Chrome/8.2.4133.68` (Chromium 152 base) on port 9227 —
+>   full pass: identity → enumerate → close-one (`1/1`, exit 0) → live
+>   recount. **Vendor quirks (verified live, Windows):** `/json/version`
+>   reports `Browser: Chrome/8.2.4133.68` — Vivaldi's *own* version
+>   under a Chrome prefix — and the User-Agent is plain Chrome with no
+>   vendor token, so identity requires the version-mismatch signature in
+>   `sweep_lib._vivaldi_version_mismatch()`. Steady-state close latency
+>   measured at 0.01s. The earlier "close hang" was root-caused to
+>   Vivaldi's first-run startup: TCP accepts before `/json/version`
+>   answers (see `references/dev-mode.md` launch-handshake note).
+> - Opera `OPR/136.0.0.0` (Chromium 152) on port 9228 — full pass:
+>   identity (UA fallback) → enumerate → close-one (`1/1`, exit 0) →
+>   live recount confirms the article tab gone. `/json/version` reports
+>   `Browser: Chrome/152...`; the OPR token survives only in User-Agent
+>   (see 1.3.5).
 >
 > There is no single end-to-end `sweep` executable by design:
 > summarization needs agent judgment, so the repo ships deterministic

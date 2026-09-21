@@ -164,6 +164,15 @@ itself reports back:
 curl -s http://127.0.0.1:9225/json/version   # manual equivalent of step 3
 ```
 
+> Vivaldi (verified live, Windows): first-run startup with a fresh
+> `--user-data-dir` can exceed 60s before `/json/version` answers, even
+> though the port already accepts TCP connections — a TCP-only readiness
+> probe looks ready and is not. Trust only the HTTP handshake in step 3,
+> and expect a full `wait_for_endpoint` timeout on the first launch of a
+> fresh profile (later launches answer in ~1s). A close or recount
+> landing in this startup window reports the list as unreachable —
+> that is the environment, not a failed close.
+
 ## Identifying the process to restart (never guess a PID)
 
 1. Resolve the exact binary first: `command -v <binary>` (Linux/macOS)

@@ -591,6 +591,30 @@ def browser_matches_product(browser: str, product: str) -> bool:
     hints = BROWSER_PRODUCT_HINTS.get(want, (want,))
     return any(h in prod for h in hints)
 
+_UA_CHROME_RE = re.compile(r"Chrome/(\d+)")
+
+
+def _vivaldi_version_mismatch(browser: str, product: str,
+                              user_agent: str) -> bool:
+    """Vivaldi signature (verified live, Vivaldi 8.2 / Chromium 152):
+    /json/version reports ``Browser: Chrome/8.2.4133.68`` — Vivaldi's OWN
+    version under a Chrome prefix — while User-Agent shows the real
+    Chromium version ``Chrome/152.0.0.0``. No vendor token exists in
+    either field. Plain Chrome always reports its Chromium version
+    consistently in both fields, so a major-version disagreement between
+    the two is distinctive. Conservative by construction: gated to
+    ``browser == "vivaldi"`` (never a generic hint), and a missing or
+    unparsable version on either side fails closed.
+    """
+    if (browser or "").strip().lower() != "vivaldi":
+        return False
+    m_b = _UA_CHROME_RE.search(product or "")
+    m_u = _UA_CHROME_RE.search(user_agent or "")
+    if not m_b or not m_u:
+        return False
+    return m_b.group(1) != m_u.group(1)
+
+
 def _ua_fallback_matches(browser: str, user_agent: str) -> bool:
     """User-Agent fallback for vendors that hide their identity in the
     /json/version ``Browser`` field. Verified live: Opera 136 (Windows)
@@ -662,7 +686,8 @@ def check_endpoint_identity(host: str, port: int, *,
             # a distinctive token in User-Agent. UA fallback is
             # conservative: only vendor-distinctive tokens may rescue.
             ua = str(payload.get("User-Agent", "") or "")
-            if not _ua_fallback_matches(want, ua):
+            if not (_ua_fallback_matches(want, ua)
+                    or _vivaldi_version_mismatch(want, product, ua)):
                 raise ValueError(
                     f"endpoint {host}:{port} reports Browser={product!r}, "
                     f"expected browser containing {expect_browser!r}; refusing")

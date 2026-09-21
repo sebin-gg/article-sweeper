@@ -3,6 +3,32 @@
 All notable changes to this skill follow Keep a Changelog. Versions use
 semver and match `metadata.version` in SKILL.md frontmatter.
 
+## [1.3.6] - 2026-09-21
+
+Fixed:
+
+- Endpoint identity: Vivaldi exposes no vendor token — verified live it
+  reports `Browser: Chrome/8.2.4133.68` (its own version under a Chrome
+  prefix) with a plain-Chrome User-Agent. The identity check now accepts
+  a major-version mismatch between Browser field and UA as the Vivaldi
+  signature (`_vivaldi_version_mismatch`, gated to `--browser vivaldi`,
+  fails closed on missing versions). A consistent plain-Chrome endpoint
+  can never produce the mismatch, so it still cannot pass as Vivaldi;
+  branded names are still refused on such an endpoint.
+
+Verified:
+
+- Opera `OPR/136.0.0.0` (Chromium 152) close path verified end-to-end on
+  Windows port 9228: real article tab, mandatory `--expect` revalidation,
+  `--browser opera` identity, `CLOSED 1/1` exit 0, live recount confirms
+  the tab gone, no unexpected closures.
+- Vivaldi `Chrome/8.2.4133.68` close path verified end-to-end on Windows
+  port 9227: same full pass (`CLOSED 1/1`, exit 0, recount clean).
+  Steady-state close latency 0.01s — the previously reported "close
+  hang" did not reproduce; it was root-caused to Vivaldi's first-run
+  startup window where TCP accepts before `/json/version` answers
+  (documented in `references/dev-mode.md` launch-handshake note).
+
 ## [1.3.5] - 2026-09-21
 
 Fixed:
