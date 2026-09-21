@@ -25,7 +25,7 @@ Behavioral rules for AI agents working in this repository. Read this before touc
 ```powershell
 python -m pytest tests/ -q          # behavioral suite (mocked CDP + Firefox fixtures)
 python -m compileall -q article-sweeper/scripts  # all scripts compile cleanly
-skills-ref validate article-sweeper  # official spec validator (pip install from agentskills/agentskills#skills-ref)
+skills-ref validate article-sweeper  # official spec validator (pip install skills-ref)
 python -c "import re; from pathlib import Path; root=Path('article-sweeper'); text=(root/'SKILL.md').read_text(); fm=text.split('---')[1]; name=re.search(r'^name:\s*(\S+)',fm,re.M).group(1); assert name==root.name; v=re.search(r'^\s*version:\s*[\"'']?([^\s\"'']+)',fm,re.M).group(1); assert '['+v+']' in Path('CHANGELOG.md').read_text()"  # skill lint
 ```
 

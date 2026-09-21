@@ -1,8 +1,7 @@
 version: 2
 updates:
-  # CI-only Python deps (requirements-ci.txt). skills-ref itself is a
-  # SHA-pinned git URL inside lint.yml (Dependabot cannot track it) —
-  # bump that SHA by hand when the validator misbehaves or monthly.
+  # CI deps (requirements-ci.txt, hash-locked; skills-ref is pinned in
+  # the same file). Bump pins via pip-compile on requirements-ci.in.
   - package-ecosystem: "pip"
     directory: "/"
     schedule:

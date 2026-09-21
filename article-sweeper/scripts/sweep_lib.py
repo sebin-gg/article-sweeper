@@ -1134,7 +1134,9 @@ def copy_session_safe(src: Path, scratch: Path, *,
     if not src.is_file():
         raise FileNotFoundError(f"not a file: {src}")
     scratch = Path(scratch)
-    scratch.mkdir(parents=True, exist_ok=True)
+    # Trust boundary (S8707): `scratch` comes from the invoking local
+    # operator (same trust as shell redirection), never remote input.
+    scratch.mkdir(parents=True, exist_ok=True)  # NOSONAR pythonsecurity:S8707
     unique = f"{os.getpid()}.{_uuid.uuid4().hex[:12]}"
     dst = scratch / f"{src.stem}.copy.{unique}{src.suffix}"
     last_err: Exception | None = None

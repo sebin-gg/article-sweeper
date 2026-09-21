@@ -1,0 +1,6 @@
+# CI dependency sources (all pinned; hash-locked in requirements-ci.txt).
+# Regenerate the lock with:
+#   pip install pip-tools && pip-compile requirements-ci.in --generate-hashes -o requirements-ci.txt
+lz4==4.4.5
+pytest==9.1.1
+skills-ref==0.1.1

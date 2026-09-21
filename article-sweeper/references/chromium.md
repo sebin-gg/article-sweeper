@@ -44,6 +44,11 @@ Brave, Edge, Vivaldi, or Opera.
 >   tabs (`1/1`, exit 0); bystander tab stayed open and the browser
 >   alive (last-tab guard honored). Its earlier verification was
 >   WSL-only (command-line fragment check).
+> - Chromium `Chrome/153.0.8010.53` on port 9223 — full pass on
+>   Windows: self-identifies via the generic `chrome` product alias
+>   (Chromium is the family's reference build) → enumerate → close-one
+>   (`1/1`, exit 0) with `--expect` revalidation; bystander article
+>   stayed open.
 > - Vivaldi `Chrome/8.2.4133.68` (Chromium 152 base) on port 9227 —
 >   full pass: identity → enumerate → close-one (`1/1`, exit 0) → live
 >   recount. **Vendor quirks (verified live, Windows):** `/json/version`

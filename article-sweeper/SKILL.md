@@ -4,7 +4,7 @@ description: Summarize open article tabs in Thorium, Chromium, Chrome, Brave, Ed
 license: MIT
 allowed-tools: Bash Read Edit Write Task WebFetch WebSearch
 metadata:
-  version: "1.3.8"
+  version: "1.3.9"
   tags: "browser,tabs,summarize,thorium,chromium,firefox"
 ---
 

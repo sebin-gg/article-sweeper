@@ -127,9 +127,9 @@ Linux stores Chromium profiles under `~/.config/<browser>/Default/`.
 macOS uses `~/Library/Application Support/<browser>/Default/`.
 Windows uses `%LOCALAPPDATA%\<browser>\User Data\Default\`.
 
-### Verification status (v1.3.8)
+### Verification status (v1.3.9)
 
-All six Chromium-family browsers in `sweep_lib.DEFAULT_PORTS` were
+All seven Chromium-family browsers in `sweep_lib.DEFAULT_PORTS` were
 verified end-to-end on Windows 11 (dedicated `--user-data-dir`, own
 loopback port, `--browser` identity, close-one with `--expect`
 revalidation, live recount). "Vendor-blind" = the `/json/version`
@@ -139,12 +139,13 @@ signature; see `article-sweeper/references/chromium.md` for details.
 
 | Browser | Version verified | Port | Identity check | Result |
 | :--- | :--- | :---: | :--- | :--- |
-| Chrome | Chrome/153.0.8010.53 | 9224 | self-identifies (`Chrome/...`) | full pass |
-| Edge | Edg/153.0.4234.48 | 9226 | self-identifies (`Edg/` alias) | full pass |
 | Thorium | Chrome/138.0.7204.300 (binary 140) | 9222 | vendor-blind → process proof | full pass |
+| Chromium | Chrome/153.0.8010.53 | 9223 | self-identifies (`chrome` alias) | full pass |
+| Chrome | Chrome/153.0.8010.53 | 9224 | self-identifies (`Chrome/...`) | full pass |
+| Brave | Chrome/153.0.8010.53 | 9225 | vendor-blind → process proof | full pass |
+| Edge | Edg/153.0.4234.48 | 9226 | self-identifies (`Edg/` alias) | full pass |
 | Vivaldi | Chrome/8.2.4133.68 (Chromium 152 base) | 9227 | vendor-blind → version-mismatch signature | full pass |
 | Opera | OPR/136.0.0.0 (Chromium 152) | 9228 | UA fallback (`OPR/` in User-Agent) | full pass |
-| Brave | Chrome/153.0.8010.53 | 9225 | vendor-blind → process proof | full pass |
 | Firefox | — | — | read-only session decode | not swept (by design) |
 
 Chromium-family browsers remain Chromium-compatible on Linux/macOS in

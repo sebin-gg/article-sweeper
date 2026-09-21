@@ -3,6 +3,28 @@
 All notable changes to this skill follow Keep a Changelog. Versions use
 semver and match `metadata.version` in SKILL.md frontmatter.
 
+## [1.3.9] - 2026-09-21
+
+Fixed:
+
+- SonarCloud security gate: all six open vulnerability findings
+  resolved for real rather than annotated — the workflow now installs
+  CI deps (including `skills-ref`, now consumed from PyPI instead of
+  an unpinned git URL) from one fully hash-locked
+  `requirements-ci.txt` (`--only-binary` + `--require-hashes`, every
+  artifact of every pin hashed via pip-tools); `lint.yml` YAML
+  NOSONAR comments (which Sonar never honored) removed; the one
+  un-annotated S8707 sink in `copy_session_safe` (`scratch.mkdir`)
+  annotated with the existing trust-boundary rationale.
+
+Verified:
+
+- Chromium `Chrome/153.0.8010.53` close path verified end-to-end on
+  Windows port 9223 (self-identifies via the generic `chrome` alias):
+  `CLOSED 1/1` exit 0 with `--expect` revalidation, bystander article
+  left open. All seven Chromium-family browsers in `DEFAULT_PORTS`
+  are now verified on Windows.
+
 ## [1.3.8] - 2026-09-21
 
 Added:
