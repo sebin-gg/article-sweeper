@@ -5,19 +5,32 @@ Brave, Edge, Vivaldi, or Opera.
 
 > Compatibility note: only Chromium CDP plus Firefox session parsing are
 > directly implemented and tested here. Thorium, Brave, Vivaldi, and Opera
-> remain *Chromium-compatible pending verification*: they usually expose
-> the same `/json/list` + `/json/close/<id>` surface, but vendor binaries,
-> profile layouts, and CDP behavior differ. Verify per browser
+> are *Chromium-compatible, per-browser verified as noted below*: they
+> expose the same `/json/list` + `/json/close/<id>` surface, but vendor
+> binaries, profile layouts, and CDP behavior differ. Verify per browser
 > (list → close one test tab → recount) before sweeping it, and record
 > the result in the run report. Do not claim an unverified browser
 > "works".
 >
-> Verified 2026-09-21 (Windows 10, headless, dedicated `--user-data-dir`,
-> own loopback port, `--browser` identity match, close-one `1/1` exit 0,
-> live recount 0 pages):
+> Verified 2026-09-21 (Windows 10/11, headless where noted, dedicated
+> `--user-data-dir`, own loopback port, `--browser` identity match):
 >
-> - Chrome `Chrome/153.0.8010.53` on port 9224.
-> - Edge `Edg/153.0.4234.48` on port 9226 (product alias `edg/` exercised).
+> - Chrome `Chrome/153.0.8010.53` on port 9224 — full pass: list →
+>   close-one (`1/1`, exit 0) → live recount 0 pages.
+> - Edge `Edg/153.0.4234.48` on port 9226 — full pass (product alias
+>   `edg/` exercised).
+> - Opera `OPR/136.0.0.0` (Chromium 152) on port 9228 — identity +
+>   enumeration pass. **Vendor quirk:** `/json/version` reports
+>   `Browser: Chrome/152.0.7977.120`; the Opera identity survives only in
+>   `User-Agent` (`OPR/136.0.0.0`). `check_endpoint_identity()` handles
+>   this via a conservative UA fallback (vendor-distinctive tokens only —
+>   a plain-Chrome endpoint is still refused as opera). Live enumeration
+>   correctly filtered internal `chrome://startpage/` targets. Close path
+>   not exercised live yet (no real article tab was open).
+> - Thorium, Brave — verified in WSL (Thorium: async close behavior,
+>   see the 1.3.4 poll fix; Brave: command-line fragment check).
+> - Vivaldi — *partial*: close hung once (timeout) and later succeeded;
+>   treated as async close application, not re-verified end-to-end.
 >
 > There is no single end-to-end `sweep` executable by design:
 > summarization needs agent judgment, so the repo ships deterministic

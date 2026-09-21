@@ -3,6 +3,28 @@
 All notable changes to this skill follow Keep a Changelog. Versions use
 semver and match `metadata.version` in SKILL.md frontmatter.
 
+## [1.3.5] - 2026-09-21
+
+Fixed:
+
+- Endpoint identity check: when `/json/version`'s `Browser` field does not
+  match the expected browser, `check_endpoint_identity()` now consults the
+  `User-Agent` as a conservative fallback — only vendor-distinctive tokens
+  (`OPR/`, `Edg/`, `brave`, ...) may rescue the match; generic
+  chrome/chromium tokens are excluded so a plain-Chrome endpoint can never
+  pose as a branded browser (and vice versa). Motivated by a live finding:
+  Opera 136 (Windows) reports `Browser: Chrome/152...` but keeps
+  `OPR/136.0.0.0` in User-Agent. Tested: 3 new unit tests; live
+  `--check-endpoint` pass on the real Opera instance.
+
+Verified:
+
+- Opera `OPR/136.0.0.0` (Chromium 152) verified live on Windows (own port
+  9228, dedicated `--user-data-dir`, fresh install dir): CDP reachable,
+  `--check-endpoint` passes with the UA fallback, tab enumeration works
+  and correctly filters internal `chrome://` start-page targets. Full
+  close-path still pending a live open-article run.
+
 ## [1.3.4] - 2026-09-21
 
 Fixed:

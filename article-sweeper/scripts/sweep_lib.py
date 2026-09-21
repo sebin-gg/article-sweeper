@@ -591,6 +591,29 @@ def browser_matches_product(browser: str, product: str) -> bool:
     hints = BROWSER_PRODUCT_HINTS.get(want, (want,))
     return any(h in prod for h in hints)
 
+def _ua_fallback_matches(browser: str, user_agent: str) -> bool:
+    """User-Agent fallback for vendors that hide their identity in the
+    /json/version ``Browser`` field. Verified live: Opera 136 (Windows)
+    reports ``Browser: Chrome/152...`` but keeps ``OPR/136.0.0.0`` in
+    User-Agent. Only vendor-distinctive tokens count here — the generic
+    chrome/chromium hint is deliberately excluded, so a plain-Chrome
+    endpoint can never pass as a branded browser (and vice versa: an
+    Opera UA still names Chrome, but Browser already matched in that
+    direction before this fallback runs).
+    """
+    want = (browser or "").strip().lower()
+    ua = (user_agent or "").lower()
+    if not want or not ua:
+        return False
+    hints = tuple(
+        h for h in BROWSER_PRODUCT_HINTS.get(want, (want,))
+        if h not in ("chrome", "chromium")
+    )
+    if not hints:
+        return False
+    return any(h in ua for h in hints)
+
+
 def check_endpoint_identity(host: str, port: int, *,
                             expect_browser: str = "",
                             fetch_version=None,
@@ -599,7 +622,11 @@ def check_endpoint_identity(host: str, port: int, *,
 
     Fetches ``/json/version`` and matches ``Browser`` product string against
     ``expect_browser`` (case-insensitive substring on the product name, e.g.
-    ``chrome``, ``brave``, ``edge``). Returns the version payload dict.
+    ``chrome``, ``brave``, ``edge``). If the Browser field does not match,
+    the ``User-Agent`` is consulted as a fallback, but only vendor-
+    distinctive tokens (``OPR/``, ``Edg/``, ``brave``, ...) may rescue the
+    match — a plain-Chrome endpoint cannot pose as a branded browser.
+    Returns the version payload dict.
 
     Raises ValueError on unreachable endpoint / malformed payload /
     browser mismatch. Callers (cdp_close) must run this before any close
@@ -630,9 +657,15 @@ def check_endpoint_identity(host: str, port: int, *,
     if expect_browser:
         want = expect_browser.strip().lower()
         if want and not browser_matches_product(want, product):
-            raise ValueError(
-                f"endpoint {host}:{port} reports Browser={product!r}, "
-                f"expected browser containing {expect_browser!r}; refusing")
+            # Some vendors hide their identity from the Browser field
+            # (verified live: Opera 136 reports "Chrome/152...") but leave
+            # a distinctive token in User-Agent. UA fallback is
+            # conservative: only vendor-distinctive tokens may rescue.
+            ua = str(payload.get("User-Agent", "") or "")
+            if not _ua_fallback_matches(want, ua):
+                raise ValueError(
+                    f"endpoint {host}:{port} reports Browser={product!r}, "
+                    f"expected browser containing {expect_browser!r}; refusing")
     return payload
 
 

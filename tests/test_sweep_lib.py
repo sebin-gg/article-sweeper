@@ -207,6 +207,51 @@ def test_browser_product_aliases():
     assert out["Browser"].startswith("Edg")
 
 
+def test_endpoint_identity_ua_fallback_opera_reports_chrome():
+    # Verified live (Windows, Opera 136): /json/version Browser field says
+    # "Chrome/152..." while User-Agent keeps the OPR/ token. The UA must
+    # rescue the match; without the fallback this endpoint is refused.
+    opera_like = {
+        "Browser": "Chrome/152.0.7977.120",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/152.0.0.0 Safari/537.36 OPR/136.0.0.0",
+    }
+    out = check_endpoint_identity(
+        "127.0.0.1", 9228, expect_browser="opera",
+        fetch_version=lambda h, p: opera_like)
+    assert out["Browser"].startswith("Chrome")
+
+
+def test_endpoint_identity_ua_fallback_rejects_plain_chrome_as_opera():
+    # The inverse direction must NOT pass: a plain-Chrome endpoint has no
+    # vendor-distinctive UA token, so it can never pose as opera (or any
+    # other branded browser). This is what a naive "chrome" hint would
+    # have broken.
+    plain_chrome = {
+        "Browser": "Chrome/152.0.7977.120",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/152.0.0.0 Safari/537.36",
+    }
+    for want in ("opera", "edge", "brave", "vivaldi", "thorium"):
+        with pytest.raises(ValueError):
+            check_endpoint_identity(
+                "127.0.0.1", 9228, expect_browser=want,
+                fetch_version=lambda h, p, _d=plain_chrome: _d)
+
+
+def test_endpoint_identity_ua_fallback_ignores_generic_hint():
+    # _ua_fallback_matches must drop generic chrome/chromium tokens: with
+    # a UA that only says "chrome" (no vendor token), no branded browser
+    # may match.
+    from sweep_lib import _ua_fallback_matches
+    ua = "Mozilla/5.0 Chrome/152.0.0.0"
+    assert not _ua_fallback_matches("opera", ua)
+    assert not _ua_fallback_matches("chrome", ua)  # chrome needs Browser field
+    assert _ua_fallback_matches("", ua) is False
+
+
 def test_port_inodes_parses_listen_sockets():
     import sweep_lib
     text = ("  sl  local_address rem_address   st tx_queue:rx_queue "
