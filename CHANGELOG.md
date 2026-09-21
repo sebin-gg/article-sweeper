@@ -32,6 +32,10 @@ Changed:
 - Dependabot: dropped the pip ecosystem (deps are hash-locked in
   `requirements-ci.txt`; bump via pip-compile) — fewer weekly PRs,
   no duplicate automation.
+- CodeQL security scanning (`.github/workflows/codeql.yml`, python +
+  actions, SHA-pinned actions, weekly schedule + PR/push triggers).
+  The default-setup API is not available on this plan, so the scanner
+  is defined as a versioned workflow instead.
 
 ## [1.3.9] - 2026-09-21
 
