@@ -21,7 +21,7 @@ jobs:
         # Same locked file as the test job: PyPI skills-ref (wheel),
         # every artifact hash-pinned -> no unpinned VCS install.
         run: |
-          pip install -r requirements-ci.txt
+          pip install --only-binary=:all: --require-hashes -r requirements-ci.txt
           agentskills validate article-sweeper
       - name: Lint skill
         run: |
@@ -60,6 +60,6 @@ jobs:
         with:
           python-version: "3.14"
       - name: Install test deps (hash-locked)
-        run: pip install -r requirements-ci.txt
+        run: pip install --only-binary=:all: --require-hashes -r requirements-ci.txt
       - name: Behavioral tests (mocked CDP / Firefox fixtures)
         run: python -m pytest tests/ -q
