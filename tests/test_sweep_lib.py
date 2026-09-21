@@ -32,8 +32,10 @@ from sweep_lib import (  # noqa: E402
     browser_matches_product,
     check_endpoint_identity,
     find_pids_listening_on,
+    iter_candidate_ports,
     read_process_cmdline,
     verify_endpoint_process,
+    wait_for_endpoint,
     redact_url,
     session_freshness,
     unwrap_tracking_wrapper,
@@ -79,6 +81,29 @@ def test_endpoint_for_accumulates_taken_set():
     assert p1 in taken and p2 in taken and p1 != p2
     # preferred ports recorded too, so a later call avoids them
     assert 9224 in taken and 9225 in taken
+
+
+def test_iter_candidate_ports_never_repeats():
+    taken: set[int] = set()
+    ports = [p for _, p in iter_candidate_ports("chrome", taken, limit=4)]
+    assert len(set(ports)) == 4 and set(ports) <= taken
+    assert ports[0] == 9224  # preferred first
+
+
+def test_wait_for_endpoint_success_and_timeout(tmp_path):
+    tabs = {"A": {"id": "A", "type": "page",
+                  "url": "https://ex.com/a", "title": "A"}}
+    with FakeCDP("Chrome/140.0.0.0", tabs) as cdp:
+        payload = wait_for_endpoint("127.0.0.1", cdp.port,
+                                    expect_browser="chrome", timeout=5)
+        assert payload["Browser"].startswith("Chrome")
+        with pytest.raises(ValueError):
+            wait_for_endpoint("127.0.0.1", cdp.port,
+                              expect_browser="brave", timeout=0.5,
+                              poll_interval=0.1)
+    with pytest.raises(ValueError):
+        wait_for_endpoint("127.0.0.1", _closed_port(), timeout=0.5,
+                          poll_interval=0.1)
 
 
 # --- URLs -------------------------------------------------------------------

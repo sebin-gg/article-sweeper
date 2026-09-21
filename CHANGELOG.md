@@ -3,6 +3,17 @@
 All notable changes to this skill follow Keep a Changelog. Versions use
 semver and match `metadata.version` in SKILL.md frontmatter.
 
+## [1.3.1] - 2026-09-21
+
+Added:
+
+- Verified launch handshake: `sweep_lib.iter_candidate_ports()` (never
+  repeats a port across retries) and `sweep_lib.wait_for_endpoint()`
+  (polls `/json/version` until the launched browser reports back with
+  the expected product). dev-mode.md documents the
+  launch → poll → process-check → retry flow, closing the
+  discover-to-bind TOCTOU gap by verification instead of reservation.
+
 ## [1.3.0] - 2026-09-21
 
 Added:

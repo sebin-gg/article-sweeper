@@ -98,6 +98,11 @@ def endpoint_for(browser: str, taken: set[int] | None = None) -> tuple[str, int]
 
     The caller's `taken` set is updated in place with the allocated port,
     so repeated calls accumulate (allocate-then-record in one step).
+
+    This is still only a hint (see find_free_port TOCTOU note): after
+    launching the browser on the returned port, confirm with
+    wait_for_endpoint() + check_endpoint_identity() (+ verify_endpoint_process
+    where supported) and retry with iter_candidate_ports() on failure.
     """
     if taken is None:
         taken = set()
@@ -108,6 +113,45 @@ def endpoint_for(browser: str, taken: set[int] | None = None) -> tuple[str, int]
     port = find_free_port(taken)
     taken.add(port)
     return DEFAULT_HOST, port
+
+
+def iter_candidate_ports(browser: str, taken: set[int] | None = None,
+                         limit: int = 8):
+    """Yield (host, port) candidates for launching a browser, most-preferred
+    first, recording each into `taken` so retries never repeat a port."""
+    if taken is None:
+        taken = set()
+    for _ in range(max(1, limit)):
+        yield endpoint_for(browser, taken)
+
+
+def wait_for_endpoint(host: str, port: int, *, expect_browser: str = "",
+                      timeout: float = 15.0, poll_interval: float = 0.25,
+                      fetch_version=None) -> dict:
+    """Poll /json/version until the endpoint answers (browser launch handshake).
+
+    Binding a discovered port races with other processes, so a launch is
+    only complete when the endpoint itself reports back: poll until
+    check_endpoint_identity() passes or `timeout` seconds elapse, then
+    raise ValueError. With `expect_browser`, the product must also match
+    (strict identity, not just reachability). `fetch_version` injects a
+    stub for tests.
+    """
+    import time as _time
+    deadline = _time.time() + max(0.1, timeout)
+    last_err: Exception | None = None
+    while True:
+        try:
+            return check_endpoint_identity(
+                host, port, expect_browser=expect_browser,
+                fetch_version=fetch_version)
+        except ValueError as exc:
+            last_err = exc
+        if _time.time() >= deadline:
+            raise ValueError(
+                f"endpoint {host}:{port} did not verify within {timeout}s: "
+                f"{last_err}")
+        _time.sleep(poll_interval)
 
 
 # ---------------------------------------------------------------------------

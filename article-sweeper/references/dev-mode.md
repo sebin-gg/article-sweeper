@@ -105,6 +105,27 @@ curl -s http://127.0.0.1:9225/json/version
 `$SCRATCH` is `/tmp/opencode` on Linux and macOS,
 `%TEMP%\opencode` on Windows.
 
+## Launch handshake (verify, then trust)
+
+A free port at discovery time may be claimed by another process before
+the browser binds it, so a launch is only complete when the endpoint
+itself reports back:
+
+1. Take candidates from `sweep_lib.iter_candidate_ports()` (preferred
+   port first, every try recorded so retries never repeat).
+2. Launch the browser on the candidate port.
+3. Poll `sweep_lib.wait_for_endpoint(host, port, expect_browser=<name>)`
+   until `/json/version` answers with the right product (or it times
+   out) — this is the "launched process bound and reported success"
+   signal. Then run the `--expect-cmd` process check where supported.
+4. On timeout or identity mismatch: kill what you launched, take the
+   next candidate, repeat. Never operate on an unverified endpoint —
+   a reclaimed port fails here by design.
+
+```bash
+curl -s http://127.0.0.1:9225/json/version   # manual equivalent of step 3
+```
+
 ## Identifying the process to restart (never guess a PID)
 
 1. Resolve the exact binary first: `command -v <binary>` (Linux/macOS)
