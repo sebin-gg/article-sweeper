@@ -172,8 +172,24 @@ curl -s http://127.0.0.1:9225/json/version   # manual equivalent of step 3
 > fresh profile (later launches answer in ~1s). A close or recount
 > landing in this startup window reports the list as unreachable —
 > that is the environment, not a failed close.
+>
+> Second known "close looks stuck" cause (Vivaldi): the
+> `vivaldi://settings/tabs/` → Tab management → "Confirm before closing
+> multiple tabs" setting. It is a UI-level prompt; verified CDP
+> single-tab closes are unaffected (applied in 0.01s, no dialog). If a
+> Vivaldi close stalls with a dialog on screen, that setting fired —
+> dismiss it by hand and rerun. The close poll fails closed meanwhile;
+> the tool must never click a confirmation dialog.
 
-## Identifying the process to restart (never guess a PID)
+## Identifying the process to restart (never guess a PID; never kill by image name)
+
+> Verified live (Windows, Thorium): a `taskkill //IM <browser>.exe` hits
+> every process of that image — including the user's own running session
+> on the default `User Data` profile — while a verification instance's
+> leftovers cannot be told apart by name alone. Resolve the exact PID
+> first (port owner via `Get-NetTCPConnection`, or filter
+> `Win32_Process` by the `--user-data-dir` fragment), signal that PID
+> only, and accept when the verification instance has already exited.
 
 1. Resolve the exact binary first: `command -v <binary>` (Linux/macOS)
    or `Get-Command <binary>` (Windows).

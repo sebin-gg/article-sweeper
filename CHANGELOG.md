@@ -3,6 +3,43 @@
 All notable changes to this skill follow Keep a Changelog. Versions use
 semver and match `metadata.version` in SKILL.md frontmatter.
 
+## [1.3.7] - 2026-09-21
+
+Added:
+
+- Windows process-ownership proof (`verify_endpoint_process_windows`):
+  the strongest identity for product-blind vendors, matching the
+  listening process's executable image path (PowerShell
+  `Get-NetTCPConnection` + `Get-Process`), injectable for tests and
+  fail-closed on query errors. Shared CLI gate `confirm_endpoint()`
+  now backs both `list_cdp_tabs.py --check-endpoint` and
+  `cdp_close.py`: a vendor-blind product (verified live: Thorium
+  reports plain `Chrome/...` with no Thorium token anywhere) may
+  proceed ONLY when `--expect-cmd` also proves the listening process;
+  both halves are required and generic-family names (chrome,
+  chromium) are excluded from the exception. CLIs print a pointer to
+  the `--expect-cmd` remedy when refusing without it.
+
+Verified:
+
+- Thorium (Thorium 140 binary, Chromium 138 base) close path verified
+  end-to-end on Windows port 9222: vendor-blind identity + live
+  process proof (`endpoint owner pid`), `CLOSED 1/1` exit 0 with
+  `--expect` revalidation. Steady-state close latency 0.02s; the WSL
+  async-close delay did not reproduce on Windows. Operational quirk
+  documented: closing the browser's only page tab exits Thorium
+  entirely (post-close recount then sees the endpoint gone — expected,
+  not a failure). Brave remains verified in WSL only.
+
+Security:
+
+- AGENTS.md + `references/dev-mode.md`: image-name kills
+  (`taskkill //IM`, `pkill <name>`) are forbidden alongside force-kill
+  flags — verified live they signal the user's own session (default
+  `User Data` profile) rather than only the verification instance.
+  Resolve the exact PID via the port owner or `--user-data-dir`
+  fragment first.
+
 ## [1.3.6] - 2026-09-21
 
 Fixed:

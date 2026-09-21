@@ -24,11 +24,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sweep_lib import (  # noqa: E402
-    check_endpoint_identity,
+    confirm_endpoint,
     parse_cdp_list,
     redact_url,
     validate_port,
-    verify_endpoint_process,
 )
 
 
@@ -45,7 +44,8 @@ def main(argv=None):
                     help="validate /json/version identity before printing")
     ap.add_argument("--expect-cmd", default="",
                     help="with --check-endpoint: command-line fragment the "
-                         "listening process must show (Linux /proc)")
+                         "listening process must show; Linux /proc cmdline "
+                        "or Windows image path")
     args = ap.parse_args(argv)
     if args.check_endpoint:
         if not args.host or not args.port:
@@ -55,16 +55,13 @@ def main(argv=None):
                              "attest an endpoint without the expected "
                              "browser identity")
         try:
-            check_endpoint_identity(args.host, args.port,
-                                    expect_browser=args.browser)
+            _, owner, _ = confirm_endpoint(
+                args.host, validate_port(args.port),
+                expect_browser=args.browser,
+                expect_cmd=args.expect_cmd)
         except ValueError as exc:
             raise SystemExit(str(exc))
-        if args.expect_cmd:
-            try:
-                owner = verify_endpoint_process(
-                    validate_port(args.port), args.expect_cmd)
-            except (ValueError, RuntimeError) as exc:
-                raise SystemExit(f"endpoint process check failed: {exc}")
+        if owner is not None:
             print(f"endpoint owner pid: {owner}", file=sys.stderr)
     # Trust boundary: local-operator CLI tool — argv path comes from the
     # invoking operator (same trust as shell redirection), validated

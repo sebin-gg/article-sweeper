@@ -775,20 +775,100 @@ def read_process_cmdline(pid: int, *, proc_root: str = "/proc") -> str:
     return raw.replace(b"\0", b" ").decode("utf-8", "replace").strip()
 
 
+def _win_listening_pids(port: int, *, run=None) -> list[int]:
+    """PIDs holding a LISTEN socket on `port` (Windows only).
+
+    PowerShell Get-NetTCPConnection is the /proc/net/tcp equivalent here;
+    injectable via `run` for tests. Raises RuntimeError when the query
+    itself fails (PowerShell missing, timeout) — callers fail closed.
+    """
+    import subprocess
+    if run is None:
+        def run(argv):
+            try:
+                return subprocess.run(argv, capture_output=True, text=True,
+                                      timeout=30)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise RuntimeError(f"windows process query failed: {exc}")
+    script = ("(Get-NetTCPConnection -LocalPort " + str(validate_port(port)) +
+              " -State Listen -ErrorAction SilentlyContinue | "
+              "Select-Object -ExpandProperty OwningProcess -Unique)")
+    proc = run(["powershell", "-NoProfile", "-Command", script])
+    return sorted({int(ln) for ln in proc.stdout.split() if ln.strip().isdigit()})
+
+
+def _win_process_image(pid: int, *, run=None) -> str:
+    """Executable path of `pid` (Windows only; '' when unreadable)."""
+    import subprocess
+    if run is None:
+        def run(argv):
+            try:
+                return subprocess.run(argv, capture_output=True, text=True,
+                                      timeout=30)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise RuntimeError(f"windows process query failed: {exc}")
+    proc = run(["powershell", "-NoProfile", "-Command",
+                f"(Get-Process -Id {int(pid)} -ErrorAction SilentlyContinue).Path"])
+    return proc.stdout.strip()
+
+
+def verify_endpoint_process_windows(port: int, expect_cmd: str, *,
+                                    list_pids=None, image_of=None) -> int:
+    """Windows process-ownership proof: some pid listening on `port` must
+    run an executable whose path contains `expect_cmd` (e.g. the binary
+    name this workflow launched). Strongest identity available on Windows
+    and the only one for product-blind vendors (verified live: Thorium
+    reports Browser='Chrome/...' with no Thorium token anywhere).
+    Injectable `list_pids`/`image_of` for tests; the real implementations
+    shell out to PowerShell. Fail closed on any query failure.
+    """
+    want = (expect_cmd or "").strip().lower()
+    if not want:
+        raise ValueError("process proof needs a non-empty expected "
+                         "command fragment")
+    if list_pids is None:
+        list_pids = _win_listening_pids
+    if image_of is None:
+        image_of = _win_process_image
+    try:
+        pids = list_pids(port)
+    except RuntimeError as exc:
+        raise ValueError(f"process lookup failed: {exc}")
+    if not pids:
+        raise ValueError(f"no local process found listening on port {port}")
+    for pid in pids:
+        try:
+            img = image_of(pid)
+        except RuntimeError as exc:
+            raise ValueError(f"process lookup failed: {exc}")
+        if img and want in img.lower():
+            return pid
+    raise ValueError(
+        f"port {port} held by pid(s) {pids} whose executable paths do "
+        f"not mention {expect_cmd!r}; refusing")
+
+
 def verify_endpoint_process(port: int, expect_cmd: str, *,
                             proc_root: str = "/proc") -> int:
     """Confirm a listener on `port` runs a command containing `expect_cmd`.
 
     Pass a fragment of the launch command this workflow used (binary name
-    or `--user-data-dir=…`). Returns the matching PID. Raises ValueError
-    when nobody listens there or no owner's command line matches, and
+    or `--user-data-dir=…`). Returns the matching PID. Linux matches the
+    /proc command line; Windows matches the executable image path (the
+    /proc cmdline is not available there). Raises ValueError when nobody
+    listens there or no owner's command line/image matches, and
     RuntimeError where process lookup is unsupported. Fail closed.
     """
     want = (expect_cmd or "").strip().lower()
     if not want:
         raise ValueError("verify_endpoint_process needs a non-empty "
                          "expected command fragment")
-    pids = find_pids_listening_on(port, proc_root=proc_root)
+    try:
+        pids = find_pids_listening_on(port, proc_root=proc_root)
+    except RuntimeError:
+        if os.name != "nt":
+            raise
+        return verify_endpoint_process_windows(port, expect_cmd)
     if not pids:
         raise ValueError(f"no local process found listening on port {port}")
     for pid in pids:
@@ -801,6 +881,44 @@ def verify_endpoint_process(port: int, expect_cmd: str, *,
     raise ValueError(
         f"port {port} held by pid(s) {pids} whose command lines do not "
         f"mention {expect_cmd!r}; refusing")
+
+
+def confirm_endpoint(host: str, port: int, *, expect_browser: str,
+                     expect_cmd: str = "",
+                     verify_process=None) -> tuple[dict, int | None, bool]:
+    """Shared CLI identity gate. Returns (version_payload, owner_pid,
+    product_matched).
+
+    Strict path: /json/version must self-identify as `expect_browser`;
+    when `expect_cmd` is given, the listening process must ALSO match
+    (strongest proof, mandatory where provided).
+
+    Vendor-blind exception: when the product string can never name the
+    requested browser (verified live: Thorium reports plain
+    'Chrome/...' with no vendor token anywhere; Windows has no /proc
+    cmdline to inspect otherwise) AND `expect_cmd` is provided, a
+    passing process-ownership proof substitutes. Both halves are
+    required — the proof never stands alone — and generic-family names
+    (chrome, chromium), which any Chrome-shaped product satisfies, are
+    excluded so a true wrong-endpoint mismatch still refuses.
+    `verify_process` injects a stub for tests; default is the real
+    `verify_endpoint_process` (Linux /proc cmdline, Windows image path).
+    """
+    product_matched = True
+    try:
+        payload = check_endpoint_identity(host, port,
+                                          expect_browser=expect_browser)
+    except ValueError as exc:
+        if (not expect_cmd
+                or browser_matches_product(expect_browser, "chrome")):
+            raise
+        product_matched = False
+        payload = {}
+    owner = None
+    if expect_cmd:
+        verifier = verify_process or verify_endpoint_process
+        owner = verifier(port, expect_cmd)
+    return payload, owner, product_matched
 
 
 # ---------------------------------------------------------------------------

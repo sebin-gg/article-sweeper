@@ -13,7 +13,10 @@ Safety (all mandatory, no bypass):
 - --browser is REQUIRED: the /json/version product string must identify
   that browser (vendor aliases handled, e.g. Edge=`Edg/`, Opera=`OPR/`),
   so a stray local CDP service on a reused port cannot be driven by
-  mistake. There is no "some Chromium endpoint" mode.
+  mistake. There is no "some Chromium endpoint" mode. Vendor-blind
+  products (Thorium reports plain "Chrome/...") are acceptable ONLY
+  when --expect-cmd also proves the listening process: the product must
+  fail to self-identify AND the process must match, or the run aborts.
 - After closing, each target is re-fetched to confirm it disappeared;
   a bare HTTP 200 is NOT proof of close. Unverifiable closes (list
   unreachable post-close) are reported FAILED with non-zero exit.
@@ -36,13 +39,12 @@ from sweep_lib import (  # noqa: E402
     DEFAULT_HOST,
     TabRecord,
     cdp_url,
-    check_endpoint_identity,
+    confirm_endpoint,
     parse_cdp_list,
     redact_url,
     validate_host,
     validate_port,
     verify_close_candidates,
-    verify_endpoint_process,
 )
 
 
@@ -101,7 +103,10 @@ def main(argv=None):
     ap.add_argument("--expect-cmd", default="",
                     help="optional: command-line fragment (binary or "
                          "--user-data-dir) the listening process must show; "
-                         "Linux /proc check, fails closed when unsupported")
+                         "command fragment (binary name or --user-data-dir) "
+                         "the listening process must show; Linux /proc "
+                         "cmdline or Windows image path; fails closed when "
+                         "unsupported")
     args = ap.parse_args(argv)
 
     try:
@@ -114,17 +119,23 @@ def main(argv=None):
         raise SystemExit("refusing close: --expect is required (no blind close by id)")
 
     # Validate endpoint identity before touching any tab: a reused port
-    # may host a different CDP service. --browser is mandatory and the
-    # product check is strict (vendor aliases handled in sweep_lib).
+    # may host a different CDP service. --browser is mandatory. Product-
+    # blind vendors (Thorium = plain "Chrome/...") may proceed ONLY when
+    # --expect-cmd proves the listening process; see sweep_lib.
+    # confirm_endpoint for the exact rules.
     try:
-        check_endpoint_identity(host, port, expect_browser=args.browser)
+        _, owner, _ = confirm_endpoint(
+            host, port, expect_browser=args.browser,
+            expect_cmd=args.expect_cmd)
     except ValueError as exc:
-        raise SystemExit(str(exc))
-    if args.expect_cmd:
-        try:
-            owner = verify_endpoint_process(port, args.expect_cmd)
-        except (ValueError, RuntimeError) as exc:
-            raise SystemExit(f"endpoint process check failed: {exc}")
+        msg = str(exc)
+        if not args.expect_cmd and "reports Browser" in msg:
+            msg += ("\nif this endpoint is genuinely " + args.browser +
+                    " (e.g. Thorium reports plain 'Chrome/...'), rerun "
+                    "with --expect-cmd <binary-name> for a "
+                    "process-ownership proof")
+        raise SystemExit(msg)
+    if owner is not None:
         print(f"endpoint owner pid: {owner}", file=sys.stderr)
 
     # Trust boundary: local-operator CLI tool. argv paths come from the

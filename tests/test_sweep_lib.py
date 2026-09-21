@@ -289,6 +289,158 @@ def test_vivaldi_version_mismatch_signature():
                 fetch_version=lambda h, p, _d=payload: dict(_d))
 
 
+def test_wait_for_endpoint_succeeds_once_vivaldi_http_answers():
+    # Regression for the live Vivaldi first-run finding (Windows): the
+    # port accepts TCP before /json/version answers, for over a minute.
+    # The launch handshake must keep polling through refused/unreachable
+    # calls and succeed the moment HTTP starts answering — one early
+    # failure must not abort the launch.
+    from sweep_lib import wait_for_endpoint
+    calls = {"n": 0}
+
+    def startup_window(host, port):
+        calls["n"] += 1
+        if calls["n"] <= 4:
+            raise ConnectionError("WinError 10061 actively refused")
+        return {"Browser": "Chrome/8.2.4133.68",
+                "User-Agent": "Mozilla/5.0 Chrome/152.0.0.0 Safari/537.36"}
+
+    out = wait_for_endpoint("127.0.0.1", 9227, expect_browser="vivaldi",
+                            timeout=10.0, poll_interval=0.05,
+                            fetch_version=startup_window)
+    assert out["Browser"].startswith("Chrome/8")
+    assert calls["n"] == 5  # 4 refused polls, then success on the 5th
+
+
+def test_wait_for_endpoint_times_out_when_http_never_answers():
+    # A startup window that never closes fails closed: ValueError after
+    # the timeout — no hang, no false success.
+    from sweep_lib import wait_for_endpoint
+
+    def down(host, port):
+        raise ConnectionError("refused")
+
+    with pytest.raises(ValueError):
+        wait_for_endpoint("127.0.0.1", 9227, expect_browser="vivaldi",
+                          timeout=0.4, poll_interval=0.05, fetch_version=down)
+
+
+def test_windows_process_proof_matches_image_path():
+    # Verified live: Thorium on Windows listens from ...\\Thorium\\
+    # Application\\thorium.exe while reporting Browser='Chrome/138...'.
+    from sweep_lib import verify_endpoint_process_windows
+
+    def list_pids(port):
+        assert port == 9222
+        return [22292]
+
+    def image_of(pid):
+        assert pid == 22292
+        return r"C:\Users\sebin\AppData\Local\Thorium\Application\thorium.exe"
+
+    owner = verify_endpoint_process_windows(9222, "thorium",
+                                            list_pids=list_pids,
+                                            image_of=image_of)
+    assert owner == 22292
+
+
+def test_windows_process_proof_fails_closed():
+    from sweep_lib import verify_endpoint_process_windows
+
+    def image_of(_pid):
+        return r"C:\other\chrome.exe"
+
+    # non-matching image -> refuse
+    with pytest.raises(ValueError):
+        verify_endpoint_process_windows(9222, "thorium",
+                                        list_pids=lambda p: [1],
+                                        image_of=image_of)
+    # no listener at all -> refuse
+    with pytest.raises(ValueError):
+        verify_endpoint_process_windows(9222, "thorium",
+                                        list_pids=lambda p: [],
+                                        image_of=image_of)
+    # empty fragment -> refuse (never a wildcard proof)
+    with pytest.raises(ValueError):
+        verify_endpoint_process_windows(9222, "  ",
+                                        list_pids=lambda p: [1],
+                                        image_of=image_of)
+    # query infrastructure failure -> refuse, not crash
+    def broken(_port):
+        raise RuntimeError("powershell missing")
+
+    with pytest.raises(ValueError):
+        verify_endpoint_process_windows(9222, "thorium",
+                                        list_pids=broken,
+                                        image_of=image_of)
+
+
+def test_confirm_endpoint_vendor_blind_requires_process_proof():
+    # Thorium's product string is CDP-identical to Chrome's (verified
+    # live). The gate must: refuse without --expect-cmd; accept ONLY
+    # product-refusal + passing process proof together; still refuse a
+    # generic-family name (chrome) whose product check can never be
+    # "vendor blindness".
+    from sweep_lib import confirm_endpoint
+    tabs = {"A": {"id": "A", "type": "page",
+                  "url": "https://ex.com/a", "title": "A"}}
+
+    def proof_ok(port, frag):
+        assert frag == "thorium"
+        return 22292
+
+    def proof_bad(port, frag):
+        raise ValueError("port held by someone else; refusing")
+
+    with FakeCDP("Chrome/138.0.7204.300", tabs) as cdp:
+        # no process proof offered -> refuse
+        with pytest.raises(ValueError):
+            confirm_endpoint("127.0.0.1", cdp.port,
+                             expect_browser="thorium")
+        # proof offered but failing -> refuse
+        with pytest.raises(ValueError):
+            confirm_endpoint("127.0.0.1", cdp.port,
+                             expect_browser="thorium",
+                             expect_cmd="thorium",
+                             verify_process=proof_bad)
+        # product refused AND proof passes -> allowed, flagged as
+        # product_matched=False
+        payload, owner, matched = confirm_endpoint(
+            "127.0.0.1", cdp.port, expect_browser="thorium",
+            expect_cmd="thorium", verify_process=proof_ok)
+        assert owner == 22292 and matched is False and payload == {}
+        # generic-family name: the strict product path matches the
+        # Chrome-shaped product directly, and a provided proof is still
+        # mandatory (a failing proof aborts even for chrome).
+        payload2, owner2, matched2 = confirm_endpoint(
+            "127.0.0.1", cdp.port, expect_browser="chrome",
+            expect_cmd="thorium", verify_process=proof_ok)
+        assert owner2 == 22292 and matched2 is True
+        with pytest.raises(ValueError):
+            confirm_endpoint("127.0.0.1", cdp.port,
+                             expect_browser="chrome",
+                             expect_cmd="thorium",
+                             verify_process=proof_bad)
+
+
+def test_cdp_close_vendor_blind_endpoint_fails_without_process_proof(tmp_path):
+    # CLI-level: product-blind --browser with no --expect-cmd aborts
+    # before touching tabs, with a pointer to the --expect-cmd remedy.
+    tabs = {"A": {"id": "A", "type": "page",
+                  "url": "https://ex.com/a", "title": "A"}}
+    with FakeCDP("Chrome/138.0.7204.300", tabs) as cdp:
+        exp = tmp_path / "expect.json"
+        cdp.dump_list(exp)
+        ids = tmp_path / "ids.txt"
+        ids.write_text("A\n", encoding="utf-8")
+        r = run("cdp_close.py", str(ids), "--host", "127.0.0.1",
+                "--port", str(cdp.port), "--expect", str(exp),
+                "--browser", "thorium")
+        assert r.returncode != 0
+        assert "--expect-cmd" in (r.stdout + r.stderr)
+        assert cdp.closed_puts == []  # nothing was closed
+
+
 def test_port_inodes_parses_listen_sockets():
     import sweep_lib
     text = ("  sl  local_address rem_address   st tx_queue:rx_queue "
@@ -1029,6 +1181,7 @@ def test_cdp_close_expect_cmd_mismatch_refuses(tmp_path):
                 "--port", str(cdp.port), "--expect", str(exp),
                 "--browser", "chrome",
                 "--expect-cmd", "definitely-not-this-process-xyz")
-        assert r.returncode != 0 and "process check failed" in (
-            r.stderr + r.stdout)
+        assert r.returncode != 0 and "refusing" in (
+            r.stderr + r.stdout)  # fail-closed message shared by
+        # /proc cmdline (Linux CI) and image-path (Windows) proofs
         assert cdp.closed_puts == []  # refused before any close

@@ -27,8 +27,17 @@ Brave, Edge, Vivaldi, or Opera.
 >   a plain-Chrome endpoint is still refused as opera). Live enumeration
 >   correctly filtered internal `chrome://startpage/` targets. Close path
 >   not exercised live yet (no real article tab was open).
-> - Thorium, Brave — verified in WSL (Thorium: async close behavior,
->   see the 1.3.4 poll fix; Brave: command-line fragment check).
+> - Thorium `Chrome/138.0.7204.300` (Thorium 140 binary, Chromium 138
+>   base) on port 9222 — full pass on Windows: identity via process
+>   proof (`--expect-cmd thorium`; the product string is vendor-blind
+>   plain `Chrome/...` with no Thorium token — see 1.3.7) → enumerate →
+>   close-one (`1/1`, exit 0) → post-close list verified. Steady-state
+>   close latency 0.02s; the WSL async-close delay did not reproduce on
+>   Windows (the 1.3.4 poll guard stays). **Operational quirk:** closing
+>   the browser's only page tab exits Thorium entirely — the post-close
+>   recount then finds the endpoint gone (connection refused), which is
+>   the expected outcome, not a failure. (Brave remains verified in WSL
+>   only; no Windows run yet.)
 > - Vivaldi `Chrome/8.2.4133.68` (Chromium 152 base) on port 9227 —
 >   full pass: identity → enumerate → close-one (`1/1`, exit 0) → live
 >   recount. **Vendor quirks (verified live, Windows):** `/json/version`
@@ -39,6 +48,10 @@ Brave, Edge, Vivaldi, or Opera.
 >   measured at 0.01s. The earlier "close hang" was root-caused to
 >   Vivaldi's first-run startup: TCP accepts before `/json/version`
 >   answers (see `references/dev-mode.md` launch-handshake note).
+>   Also reported live: Vivaldi's "Confirm before closing multiple
+>   tabs" setting (`vivaldi://settings/tabs/`) can hold a close behind
+>   a UI dialog — CDP closes verified unaffected, and the tool fails
+>   closed rather than clicking the dialog.
 > - Opera `OPR/136.0.0.0` (Chromium 152) on port 9228 — full pass:
 >   identity (UA fallback) → enumerate → close-one (`1/1`, exit 0) →
 >   live recount confirms the article tab gone. `/json/version` reports
