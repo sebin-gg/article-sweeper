@@ -95,8 +95,9 @@ token-efficient and deterministic.
 
 Check binaries first, then read matching reference file. Never assume
 Thorium-only. Only probe and sweep browsers in scope (user-named, else
-all installed). Tabs in out-of-scope browsers stay open and get no
-summary. Header `Source:` lists which browsers were swept.
+all installed and eligible). Browsers that cannot be safely enumerated
+are out of scope: their tabs stay open and get no summary. Header
+`Source:` lists which browsers were swept.
 
 ```bash
 for b in thorium chromium chromium-browser google-chrome google-chrome-stable brave brave-browser microsoft-edge microsoft-edge-stable vivaldi opera firefox; do

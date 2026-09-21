@@ -4,6 +4,7 @@
   <a href="https://github.com/sebin-gg/article-sweeper/actions"><img src="https://github.com/sebin-gg/article-sweeper/actions/workflows/lint.yml/badge.svg" alt="Lint"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License"></a>
   <a href="https://github.com/sebin-gg/article-sweeper/stargazers"><img src="https://img.shields.io/github/stars/sebin-gg/article-sweeper?style=social" alt="Stars"></a>
+  <a href="https://skills.sh/sebin-gg/article-sweeper"><img src="https://skills.sh/b/sebin-gg/article-sweeper" alt="skills.sh"></a>
 </p>
 
 > **A tab sweeper for article hoarders.** Summarizes open article tabs across Thorium, Chromium, Chrome, Brave, Edge, Vivaldi, Opera, and Firefox, files them to a dated desktop note, and closes only the summarized tabs.
@@ -42,7 +43,10 @@ Example prompts:
 - "Summarize Thorium tabs, leave everything else open"
 
 Name browsers to scope the sweep. Unnamed browsers stay open and get no
-summary. No names = all detected browsers swept.
+summary. No browser names = all detected, eligible browsers are
+considered. Browsers that cannot be safely enumerated (e.g. Chrome's
+default profile under the Chrome 136+ debugging restriction) are reported
+as out of scope instead of swept.
 
 ## What it does
 
