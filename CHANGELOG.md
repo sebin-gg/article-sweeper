@@ -3,6 +3,46 @@
 All notable changes to this skill follow Keep a Changelog. Versions use
 semver and match `metadata.version` in SKILL.md frontmatter.
 
+## [1.3.10] - 2026-09-21
+
+Fixed:
+
+- `cdp_close.py --allow-last-tab`: when every close applies and the
+  endpoint then disappears (verified live behavior of browsers that
+  exit on their last page close), the run now reports `allowed
+  last-tab shutdown` and exits 0 instead of failing as UNVERIFIED —
+  matching the documented contract. Any other unreachable-endpoint
+  failure still fails closed.
+
+Added:
+
+- Runtime ambiguity notice: when `--browser chrome|chromium` passes on
+  a `Chrome/...` product string without `--expect-cmd`, cdp_close
+  warns that vendor-blind forks share that string and recommends the
+  process-ownership proof. CDP cannot cryptographically distinguish
+  real Chrome from such forks; the notice states the limit instead of
+  overclaiming identity.
+
+Changed:
+
+- SKILL.md verification status synced with reality: all seven
+  `DEFAULT_PORTS` Chromium-family browsers verified end-to-end on
+  Windows (previously claimed "Chrome and Edge verified, rest
+  pending").
+- Dependabot: dropped the pip ecosystem (deps are hash-locked in
+  `requirements-ci.txt`; bump via pip-compile) — fewer weekly PRs,
+  no duplicate automation.
+- CodeQL security scanning (`.github/workflows/codeql.yml`, python +
+  actions, SHA-pinned actions, weekly schedule + PR/push triggers).
+  The default-setup API is not available on this plan, so the scanner
+  is defined as a versioned workflow instead.
+- `sweep_lib.endpoint_gone_confirmed()` (new in this version) builds
+  its probe URL via `cdp_url()` instead of a second `http://` format
+  string — one URL builder, loopback-only by construction — and its
+  exception mapping moved into the pure `_probe_failure_state()`
+  helper (behavior unchanged; clears the SonarCloud S5332/S3776
+  findings on the new code).
+
 ## [1.3.9] - 2026-09-21
 
 Fixed:

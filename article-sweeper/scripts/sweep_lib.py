@@ -16,7 +16,9 @@ import os
 import re
 import socket
 import tempfile
+import urllib.error
 import urllib.parse
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -1287,3 +1289,65 @@ def session_freshness(session_path: Path) -> dict:
     info["backup_newer"] = newest > mtime
     info["newest_backup"] = newest_name if info["backup_newer"] else None
     return info
+
+
+def endpoint_gone_confirmed(host: str, port: int, attempts: int = 3,
+                            timeout: float = 2.0) -> str | None:
+    """Classify whether a dev-mode endpoint is gone, and how sure we are.
+
+    Loopback-only by construction: the probe URL comes from `cdp_url()`,
+    so a non-loopback host is refused with ValueError exactly like every
+    other CDP call.
+
+    Returns one of:
+    - "refused": TCP connection refused (RST - nothing listens). For a
+      dev-mode endpoint this means the browser process is provably dead.
+      Caveat: some Windows firewall configurations silently drop SYN to
+      dead ports, which surfaces as a timeout (None) instead - on such
+      hosts "refused" is simply never observed.
+    - "dead": TCP accepted but no HTTP response (connection closed or
+      reset mid-request). The mid-shutdown window of an exiting browser
+      looks like this; so does a wedged server, so this is evidence,
+      not proof. This is the classification real browser exits produce
+      on Windows (the listener's accept socket resets in-flight HTTP).
+    - "alive": endpoint answered a full HTTP request.
+    - None: inconclusive (timeout, unreachable host) - fail closed.
+    """
+    url = cdp_url(host, port, "/json/version")
+    state: str | None = None
+    for _ in range(max(1, attempts)):
+        try:
+            urllib.request.urlopen(url, timeout=timeout).close()
+            return "alive"  # endpoint answering again: not gone
+        except urllib.error.HTTPError:
+            return "alive"  # HTTP-level error still proves it serves HTTP
+        except OSError as exc:
+            state = _probe_failure_state(exc, state)
+            if state is None:
+                return None  # inconclusive: fail closed
+    return state
+
+
+def _probe_failure_state(exc: OSError, prior: str | None) -> str | None:
+    """Map one failed endpoint probe to "refused", "dead", or None.
+
+    urlopen normally wraps socket errors in urllib.error.URLError, so the
+    inner `reason` is what gets classified. `prior` carries the strongest
+    evidence so far: a bare OSError after an already-proven refusal keeps
+    that evidence for the caller's retry; anything else unclassifiable is
+    inconclusive (None) so callers fail closed.
+    """
+    if isinstance(exc, urllib.error.URLError):
+        reason = getattr(exc, "reason", None)
+        if isinstance(reason, ConnectionRefusedError):
+            return "refused"
+        if isinstance(reason, (ConnectionResetError, ConnectionAbortedError)):
+            return "dead"  # accepted-then-reset: dying peer
+        return None  # timeout / unknown reason: inconclusive
+    if isinstance(exc, ConnectionRefusedError):
+        return "refused"
+    if isinstance(exc, (ConnectionResetError, ConnectionAbortedError)):
+        return "dead"
+    if prior == "refused":
+        return "refused"
+    return None

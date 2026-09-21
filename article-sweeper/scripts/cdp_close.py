@@ -43,6 +43,7 @@ from sweep_lib import (  # noqa: E402
     TabRecord,
     cdp_url,
     confirm_endpoint,
+    endpoint_gone_confirmed,
     last_page_guard,
     parse_cdp_list,
     redact_url,
@@ -70,7 +71,9 @@ def close_one(host, port, tab_id, timeout=5):
         # Some browsers apply the close asynchronously ("Target is closing"
         # while still listed), so poll briefly before calling it failed.
         # Unverifiable == FAILED: a safety tool must not claim success
-        # it could not prove.
+        # it could not prove. Exception: the endpoint connection-REFUSED
+        # means the browser process itself is provably gone (last-tab
+        # exit) — the close definitely applied.
         import time as _time
         live = None
         last_err = ""
@@ -80,6 +83,10 @@ def close_one(host, port, tab_id, timeout=5):
                         if isinstance(d, dict)}
             except Exception as exc:
                 last_err = str(exc)[:80]
+                if endpoint_gone_confirmed(host, port) in (
+                        "refused", "dead"):
+                    return tab_id, True, "closed (endpoint gone: browser "\
+                        "exited after last-tab close)"
                 live = None
                 break  # unreachable: report below, no point polling
             if tab_id not in live:
@@ -130,7 +137,7 @@ def main(argv=None):
     # --expect-cmd proves the listening process; see sweep_lib.
     # confirm_endpoint for the exact rules.
     try:
-        _, owner, _ = confirm_endpoint(
+        ver, owner, _ = confirm_endpoint(
             host, port, expect_browser=args.browser,
             expect_cmd=args.expect_cmd)
     except ValueError as exc:
@@ -143,6 +150,15 @@ def main(argv=None):
         raise SystemExit(msg)
     if owner is not None:
         print(f"endpoint owner pid: {owner}", file=sys.stderr)
+    # Ambiguity notice: CDP cannot distinguish real Chrome/Chromium from
+    # vendor-blind forks (Thorium/Brave report plain 'Chrome/<v>'). When
+    # --browser chrome|chromium passes without a process proof, say so
+    # instead of silently asserting an identity CDP cannot prove.
+    if (args.browser in ("chrome", "chromium") and not args.expect_cmd
+            and ver.get("Browser", "").startswith("Chrome/")):
+        print("note: 'Chrome/...' product strings are shared by "
+              "vendor-blind forks; add --expect-cmd to prove the "
+              "listening process identity", file=sys.stderr)
 
     # Trust boundary: local-operator CLI tool. argv paths come from the
     # invoking operator (same trust as shell redirection) and are
@@ -221,6 +237,11 @@ def main(argv=None):
     print(f"closed ok: {ok}/{len(ids)}", file=sys.stderr)
     # Before/after set comparison: anything from the close set still open
     # or anything outside it that vanished => failure.
+    # --allow-last-tab exception: when every close applied and the
+    # endpoint then disappears (connection refused/unreachable), that is
+    # the verified behavior of a browser exiting on its last page close
+    # (Thorium) - the closes succeeded and there is nothing left to
+    # verify. Report and exit 0. Any other failure stays a failure.
     try:
         after_raw = fetch_list(host, port)
         after = parse_cdp_list(after_raw, endpoint=endpoint,
@@ -237,10 +258,25 @@ def main(argv=None):
     except SystemExit:
         raise
     except Exception as exc:
+        gone = (endpoint_gone_confirmed(host, port)
+                if args.allow_last_tab and closed_ids
+                and ok == len(ids) else None)
+        if gone in ("refused", "dead"):
+            print(f"allowed last-tab shutdown: endpoint {gone} after "
+                  f"close ({exc}) - expected browser exit, closes "
+                  f"verified", file=sys.stderr)
+            sys.exit(0)
+        if gone == "alive":
+            print(f"FAILED endpoint answering again but list unreadable: "
+                  f"{exc}", file=sys.stderr)
+            sys.exit(1)
         print(f"FAILED post-close verification unreachable: {exc}",
               file=sys.stderr)
         sys.exit(1)
     sys.exit(0 if ok == len(ids) else 1)
+    # endpoint_gone_confirmed classifications used above: "refused" and
+    # "dead" both mean the browser process is gone (proof vs strong
+    # evidence); "alive" or None fail closed.
 
 
 if __name__ == "__main__":

@@ -932,7 +932,7 @@ class FakeCDP:
 
     def __init__(self, product, tabs, *, keep_on_close=False,
                  fail_list_after_close=False, also_drop=(),
-                 close_delay_lists=0):
+                 close_delay_lists=0, stop_after_close=False):
         import threading
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
         self.product = product
@@ -946,6 +946,10 @@ class FakeCDP:
         self.close_delay_lists = close_delay_lists
         self.pending_removals = {}  # tab_id -> lists remaining
         self.closed_puts = []
+        # browser-exits-on-last-tab-close simulation (verified live:
+        # Thorium) - the whole endpoint disappears, not just the tab
+        self.stop_after_close = stop_after_close
+        self.stop = False
         state = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -961,6 +965,14 @@ class FakeCDP:
                 self.wfile.write(raw)
 
             def do_GET(self):
+                if state.stop:
+                    # simulate process exit: connection dies mid-request
+                    self.close_connection = True
+                    try:
+                        self.connection.close()
+                    except OSError:
+                        pass
+                    return
                 if self.path == "/json/version":
                     self._send(200, json.dumps(
                         {"Browser": state.product,
@@ -996,6 +1008,9 @@ class FakeCDP:
                             state.tabs.pop(extra, None)
                     if state.fail_list_after_close:
                         state.fail_list = True
+                    if (state.stop_after_close and not state.tabs
+                            and not state.pending_removals):
+                        state.stop = True  # last page gone -> browser exits
                     self._send(200, "Target closed", "text/plain")
                 else:
                     self._send(404, "nope", "text/plain")
@@ -1065,6 +1080,10 @@ def test_cdp_close_happy_path(tmp_path):
         assert "closed ok: 1/1" in r.stderr
         assert "A" not in cdp.tabs and "B" in cdp.tabs
         assert cdp.closed_puts == ["A"]
+        # Ambiguity contract: vendor-blind forks share the Chrome
+        # product string, so --browser chrome passing without a process
+        # proof must say so instead of silently asserting identity.
+        assert "vendor-blind forks" in r.stderr
 
 
 def test_cdp_close_skips_navigated_tab(tmp_path):
@@ -1167,6 +1186,45 @@ def test_cdp_close_refuses_last_page_tab(tmp_path):
                  "--browser", "chrome", "--allow-last-tab")
         assert r2.returncode == 0, r2.stderr + r2.stdout
         assert "closed ok: 1/1" in r2.stderr
+
+
+def test_cdp_close_allow_last_tab_browser_exits_success(tmp_path):
+    # Regression (rescan): with --allow-last-tab, a browser that exits
+    # after its last page closes (verified live: Thorium) makes the
+    # post-close list unreachable. That is the documented expected
+    # shutdown - exit 0, not UNVERIFIED/FAILED.
+    def make_files(cdp, d):
+        exp = d / "expect.json"
+        cdp.dump_list(exp)
+        ids = d / "ids.txt"
+        ids.write_text("A\n", encoding="utf-8")
+        return exp, ids
+
+    # Without the opt-in the guard refuses before any close request.
+    with FakeCDP("Chrome/140.0.0.0", {
+            "A": {"id": "A", "type": "page",
+                  "url": "https://ex.com/a", "title": "A"}}) as cdp:
+        exp, ids = make_files(cdp, tmp_path)
+        r = run("cdp_close.py", str(ids), "--host", "127.0.0.1",
+                "--port", str(cdp.port), "--expect", str(exp),
+                "--browser", "chrome")
+        assert r.returncode != 0
+        assert "zero page tabs" in (r.stdout + r.stderr)
+        assert cdp.closed_puts == []
+
+    # With the opt-in the endpoint dies after the close -> success.
+    with FakeCDP("Chrome/140.0.0.0", {
+            "A": {"id": "A", "type": "page",
+                  "url": "https://ex.com/a", "title": "A"}},
+            stop_after_close=True) as cdp:
+        exp, ids = make_files(cdp, tmp_path)
+        r2 = run("cdp_close.py", str(ids), "--host", "127.0.0.1",
+                 "--port", str(cdp.port), "--expect", str(exp),
+                 "--browser", "chrome", "--allow-last-tab")
+        assert r2.returncode == 0, r2.stderr + r2.stdout
+        assert "allowed last-tab shutdown" in (r2.stdout + r2.stderr)
+        assert "UNVERIFIED" not in (r2.stdout + r2.stderr)
+        assert cdp.closed_puts == ["A"]
         assert cdp.closed_puts == ["A"]
 
 
@@ -1194,6 +1252,72 @@ def test_cdp_close_refuses_partial_last_page_close(tmp_path):
                  "--browser", "chrome")
         assert r2.returncode == 0, r2.stderr + r2.stdout
         assert "B" in cdp.tabs  # bystander stayed open
+
+
+def test_endpoint_gone_confirmed_classifications():
+    from sweep_lib import endpoint_gone_confirmed
+    import socket as _socket
+
+    # alive: real HTTP endpoint answers
+    with FakeCDP("Chrome/140.0.0.0", {"A": {"id": "A", "type": "page",
+                  "url": "https://ex.com/a", "title": "A"}}) as cdp:
+        assert endpoint_gone_confirmed("127.0.0.1", cdp.port) == "alive"
+
+    # dead: TCP accepts, then the connection dies before a response
+    with FakeCDP("Chrome/140.0.0.0", {}) as cdp:
+        cdp.stop = True  # handler closes every connection raw
+        assert endpoint_gone_confirmed("127.0.0.1", cdp.port) == "dead"
+
+    # refused: nothing listening on the port (RST) -> process provably
+    # gone. Platform caveat: Windows firewall configs may drop SYN to
+    # dead ports, surfacing as a timeout (None) instead of RST.
+    dead_port = _closed_port()
+    r = endpoint_gone_confirmed("127.0.0.1", dead_port)
+    if sys.platform == "win32":
+        assert r in ("refused", None), r
+    else:
+        assert r == "refused", r
+
+    # inconclusive: TCP connects (listening backlog) but no HTTP response
+    # ever arrives -> timeout -> fail closed (None)
+    silent = _socket.socket()
+    silent.bind(("127.0.0.1", 0))
+    silent.listen(1)
+    try:
+        assert endpoint_gone_confirmed("127.0.0.1", silent.getsockname()[1],
+                                       attempts=1, timeout=0.4) is None
+    finally:
+        silent.close()
+
+    # loopback-only by construction: the probe URL comes from cdp_url()
+    with pytest.raises(ValueError):
+        endpoint_gone_confirmed("10.255.255.1", 9225)
+
+
+def test_probe_failure_state_classifications():
+    from sweep_lib import _probe_failure_state as classify
+    import urllib.error
+
+    # urlopen wraps socket errors in URLError: the inner reason decides
+    assert classify(
+        urllib.error.URLError(ConnectionRefusedError(61, "refused")),
+        None) == "refused"
+    assert classify(
+        urllib.error.URLError(ConnectionResetError(104, "reset")),
+        None) == "dead"
+    assert classify(
+        urllib.error.URLError(ConnectionAbortedError(103, "aborted")),
+        None) == "dead"
+    assert classify(urllib.error.URLError(TimeoutError("timed out")),
+                    "dead") is None  # URL-level timeout: inconclusive
+    # direct socket errors (no URLError wrapper)
+    assert classify(ConnectionRefusedError(61, "refused"), None) == "refused"
+    assert classify(ConnectionResetError(104, "reset"), "refused") == "dead"
+    # bare OSError: keeps an already-proven refusal, else inconclusive
+    assert classify(TimeoutError("timed out"), "refused") == "refused"
+    assert classify(OSError("weird"), "refused") == "refused"
+    assert classify(TimeoutError("timed out"), "dead") is None
+    assert classify(OSError("weird"), None) is None
 
 
 def test_last_page_guard_unit():

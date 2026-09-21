@@ -1,11 +1,8 @@
 version: 2
 updates:
-  # CI deps (requirements-ci.txt, hash-locked; skills-ref is pinned in
-  # the same file). Bump pins via pip-compile on requirements-ci.in.
-  - package-ecosystem: "pip"
-    directory: "/"
-    schedule:
-      interval: "weekly"
+  # github-actions only. Python CI deps are hash-locked in
+  # requirements-ci.txt (bump via pip-compile on requirements-ci.in);
+  # a pip ecosystem entry here would only duplicate that work.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
