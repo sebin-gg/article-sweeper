@@ -220,6 +220,31 @@ def test_port_inodes_parses_listen_sockets():
     assert sweep_lib._port_inodes(text, 8080) == {12345}  # 0x1F90; ESTABLISHED ignored
 
 
+@pytest.mark.skipif(os.name != "posix", reason="needs Linux /proc")
+def test_find_pids_sees_real_ipv6_listener():
+    # live ::1 socket: proves tcp6 parsing against the real kernel tables,
+    # not just the fake-proc fixture above.
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    except OSError:
+        pytest.skip("no IPv6 support")
+    try:
+        try:
+            s.bind(("::1", 0))
+            s.listen(1)
+        except OSError:
+            pytest.skip("cannot bind ::1")
+        port = s.getsockname()[1]
+        try:
+            pids = find_pids_listening_on(port)
+        except RuntimeError:
+            pytest.skip("no /proc net tables readable")
+        assert os.getpid() in pids
+    finally:
+        s.close()
+
+
 @pytest.mark.skipif(os.name != "posix", reason="fake /proc tree needs POSIX symlinks")
 def test_verify_endpoint_process_against_fake_proc(tmp_path):
     proc = tmp_path / "proc"
