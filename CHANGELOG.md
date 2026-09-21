@@ -3,6 +3,32 @@
 All notable changes to this skill follow Keep a Changelog. Versions use
 semver and match `metadata.version` in SKILL.md frontmatter.
 
+## [1.3.8] - 2026-09-21
+
+Added:
+
+- Last-page guard: `sweep_lib.last_page_guard()` + `cdp_close.py
+  --allow-last-tab`. Verified live (Thorium, Windows): closing a
+  browser's only page tab exits the whole browser, losing the endpoint
+  and any tabs meant to stay open. A close set that would leave zero
+  page tabs is now refused by default with an actionable remedy;
+  `--allow-last-tab` opts in explicitly. Singleton browsers are the
+  case detectable with certainty over CDP; multi-window last-window
+  variants are out of scope and documented as such.
+
+Verified:
+
+- Brave `Chrome/153.0.8010.53` (Chromium 153 base) close path verified
+  end-to-end on Windows port 9225: vendor-blind product (plain
+  `Chrome/...`, no Brave token in Browser or UA — unlike the WSL-era
+  builds) + live Windows process proof (`--expect-cmd brave`),
+  `CLOSED 1/1` exit 0 with `--expect` revalidation; bystander article
+  stayed open. All six Chromium-family browsers in `DEFAULT_PORTS` are
+  now verified end-to-end on Windows; Brave's earlier verification was
+  WSL-only.
+- Full suite green on Windows (76 passed, 2 skipped) and WSL
+  (78 passed, 0 skipped — the /proc-only process tests run on Linux).
+
 ## [1.3.7] - 2026-09-21
 
 Added:

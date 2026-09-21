@@ -20,6 +20,9 @@ Safety (all mandatory, no bypass):
 - After closing, each target is re-fetched to confirm it disappeared;
   a bare HTTP 200 is NOT proof of close. Unverifiable closes (list
   unreachable post-close) are reported FAILED with non-zero exit.
+- Closing what would leave the browser with zero page tabs is refused
+  by default (verified live: Thorium exits the whole browser);
+  --allow-last-tab opts in explicitly.
 - --port must satisfy 1 <= port <= 65535. --host is loopback-only.
 
 ids.txt holds one tab id per line. Prints per-id results to stdout and a
@@ -40,6 +43,7 @@ from sweep_lib import (  # noqa: E402
     TabRecord,
     cdp_url,
     confirm_endpoint,
+    last_page_guard,
     parse_cdp_list,
     redact_url,
     validate_host,
@@ -101,12 +105,14 @@ def main(argv=None):
                     help="REQUIRED: expected browser for /json/version identity")
     ap.add_argument("--endpoint", default="")
     ap.add_argument("--expect-cmd", default="",
-                    help="optional: command-line fragment (binary or "
+                    help="optional: command-line fragment (binary name or "
                          "--user-data-dir) the listening process must show; "
-                         "command fragment (binary name or --user-data-dir) "
-                         "the listening process must show; Linux /proc "
-                         "cmdline or Windows image path; fails closed when "
-                         "unsupported")
+                         "Linux /proc cmdline or Windows image path; fails "
+                         "closed when unsupported")
+    ap.add_argument("--allow-last-tab", action="store_true",
+                    help="permit closing what would leave zero page tabs "
+                         "(verified live: Thorium exits the whole browser); "
+                         "default refuses")
     args = ap.parse_args(argv)
 
     try:
@@ -184,12 +190,24 @@ def main(argv=None):
         print("nothing safe to close after revalidation", file=sys.stderr)
         sys.exit(0)
 
+    # Last-page guard: closing every safe candidate would leave the
+    # browser with zero page tabs -> verified live (Thorium) this exits
+    # the whole browser. Refuse by default; --allow-last-tab opts in.
     # Post-close: diff FRESH before-close baseline vs final. --expect is
     # the authorization snapshot (stale by design); `live` is the actual
     # pre-close state. Unrelated tabs that closed naturally between
     # --expect and revalidation must not count as unexpected closures.
     from sweep_lib import diff_tab_sets as _diff
     live_by_id = {t.id: t for t in live}
+
+    # Last-page guard: closing every safe candidate would leave the
+    # browser with zero page tabs -> verified live (Thorium) this exits
+    # the whole browser. Refuse by default; --allow-last-tab opts in.
+    if not args.allow_last_tab:
+        try:
+            last_page_guard(safe, list(live_by_id.values()))
+        except ValueError as exc:
+            raise SystemExit(str(exc))
 
     ok = 0
     closed_ids: list[str] = []

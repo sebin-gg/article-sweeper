@@ -4,7 +4,7 @@ description: Summarize open article tabs in Thorium, Chromium, Chrome, Brave, Ed
 license: MIT
 allowed-tools: Bash Read Edit Write Task WebFetch WebSearch
 metadata:
-  version: "1.3.7"
+  version: "1.3.8"
   tags: "browser,tabs,summarize,thorium,chromium,firefox"
 ---
 
@@ -249,7 +249,11 @@ The script refuses ids missing from `--expect`, skips ids that vanished
 or navigated since approval (canonical-URL comparison), requires the
 endpoint to answer `/json/version` with the `--browser` product match,
 and confirms each target disappeared afterwards — unverifiable closes
-(list unreachable) count as FAILED with non-zero exit. Afterwards run
+(list unreachable) count as FAILED with non-zero exit. A close set that
+would leave the browser with zero page tabs is refused by default
+(verified live: Thorium exits the whole browser); open or leave another
+tab first, or pass `--allow-last-tab` to accept the shutdown
+explicitly. Afterwards run
 the before/after set comparison (`sweep_lib.diff_tab_sets()`): zero ids
 from the close set remain, and anything else that closed unexpectedly
 is reported (non-zero exit). The diff baseline is the fresh live list

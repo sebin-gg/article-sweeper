@@ -1049,7 +1049,9 @@ def test_cdp_list_check_endpoint_happy_and_wrong_browser(tmp_path):
 
 def test_cdp_close_happy_path(tmp_path):
     tabs = {"A": {"id": "A", "type": "page",
-                  "url": "https://ex.com/a", "title": "A"}}
+                  "url": "https://ex.com/a", "title": "A"},
+            "B": {"id": "B", "type": "page",
+                  "url": "https://ex.com/b", "title": "B"}}
     with FakeCDP("Chrome/140.0.0.0", tabs) as cdp:
         exp = tmp_path / "expect.json"
         cdp.dump_list(exp)
@@ -1061,7 +1063,8 @@ def test_cdp_close_happy_path(tmp_path):
                 "--endpoint", f"127.0.0.1:{cdp.port}")
         assert r.returncode == 0, r.stderr + r.stdout
         assert "closed ok: 1/1" in r.stderr
-        assert cdp.tabs == {} and cdp.closed_puts == ["A"]
+        assert "A" not in cdp.tabs and "B" in cdp.tabs
+        assert cdp.closed_puts == ["A"]
 
 
 def test_cdp_close_skips_navigated_tab(tmp_path):
@@ -1083,8 +1086,12 @@ def test_cdp_close_skips_navigated_tab(tmp_path):
 
 
 def test_cdp_close_fails_when_target_stays_listed(tmp_path):
+    # Bystander B keeps the last-page guard out of the way: this test
+    # exercises the post-close still-listed failure, not the guard.
     tabs = {"A": {"id": "A", "type": "page",
-                  "url": "https://ex.com/a", "title": "A"}}
+                  "url": "https://ex.com/a", "title": "A"},
+            "B": {"id": "B", "type": "page",
+                  "url": "https://ex.com/b", "title": "B"}}
     with FakeCDP("Chrome/140.0.0.0", tabs, keep_on_close=True) as cdp:
         exp = tmp_path / "expect.json"
         cdp.dump_list(exp)
@@ -1102,7 +1109,9 @@ def test_cdp_close_tolerates_async_close(tmp_path):
     # disappearance follows a beat later. The CLI polls instead of
     # failing on the first still-listed read.
     tabs = {"A": {"id": "A", "type": "page",
-                  "url": "https://ex.com/a", "title": "A"}}
+                  "url": "https://ex.com/a", "title": "A"},
+            "B": {"id": "B", "type": "page",
+                  "url": "https://ex.com/b", "title": "B"}}
     with FakeCDP("Chrome/140.0.0.0", tabs, close_delay_lists=2) as cdp:
         exp = tmp_path / "expect.json"
         cdp.dump_list(exp)
@@ -1116,8 +1125,12 @@ def test_cdp_close_tolerates_async_close(tmp_path):
 
 
 def test_cdp_close_fails_when_post_close_list_unreachable(tmp_path):
+    # Bystander B keeps the last-page guard out of the way: this test
+    # exercises the post-close unreachable-list failure, not the guard.
     tabs = {"A": {"id": "A", "type": "page",
-                  "url": "https://ex.com/a", "title": "A"}}
+                  "url": "https://ex.com/a", "title": "A"},
+            "B": {"id": "B", "type": "page",
+                  "url": "https://ex.com/b", "title": "B"}}
     with FakeCDP("Chrome/140.0.0.0", tabs,
                  fail_list_after_close=True) as cdp:
         exp = tmp_path / "expect.json"
@@ -1129,6 +1142,73 @@ def test_cdp_close_fails_when_post_close_list_unreachable(tmp_path):
                 "--browser", "chrome")
         assert r.returncode != 0
         assert "UNVERIFIED" in (r.stdout + r.stderr)
+
+
+def test_cdp_close_refuses_last_page_tab(tmp_path):
+    # Verified live (Thorium, Windows): closing the browser's only page
+    # tab exits the whole browser. Default: refuse, with a remedy.
+    tabs = {"A": {"id": "A", "type": "page",
+                  "url": "https://ex.com/a", "title": "A"}}
+    with FakeCDP("Chrome/140.0.0.0", tabs) as cdp:
+        exp = tmp_path / "expect.json"
+        cdp.dump_list(exp)
+        ids = tmp_path / "ids.txt"
+        ids.write_text("A\n", encoding="utf-8")
+        r = run("cdp_close.py", str(ids), "--host", "127.0.0.1",
+                "--port", str(cdp.port), "--expect", str(exp),
+                "--browser", "chrome")
+        assert r.returncode != 0
+        assert "zero page tabs" in (r.stdout + r.stderr)
+        assert "--allow-last-tab" in (r.stdout + r.stderr)
+        assert cdp.closed_puts == []  # refused before any close
+        # Opt-in flag accepts the shutdown explicitly.
+        r2 = run("cdp_close.py", str(ids), "--host", "127.0.0.1",
+                 "--port", str(cdp.port), "--expect", str(exp),
+                 "--browser", "chrome", "--allow-last-tab")
+        assert r2.returncode == 0, r2.stderr + r2.stdout
+        assert "closed ok: 1/1" in r2.stderr
+        assert cdp.closed_puts == ["A"]
+
+
+def test_cdp_close_refuses_partial_last_page_close(tmp_path):
+    # Guard math: closing BOTH tabs would exhaust pages -> refuse; the
+    # same close list trimmed to one tab is fine.
+    tabs = {"A": {"id": "A", "type": "page",
+                  "url": "https://ex.com/a", "title": "A"},
+            "B": {"id": "B", "type": "page",
+                  "url": "https://ex.com/b", "title": "B"}}
+    with FakeCDP("Chrome/140.0.0.0", tabs) as cdp:
+        exp = tmp_path / "expect.json"
+        cdp.dump_list(exp)
+        ids = tmp_path / "ids.txt"
+        ids.write_text("A\nB\n", encoding="utf-8")
+        r = run("cdp_close.py", str(ids), "--host", "127.0.0.1",
+                "--port", str(cdp.port), "--expect", str(exp),
+                "--browser", "chrome")
+        assert r.returncode != 0
+        assert "zero page tabs" in (r.stdout + r.stderr)
+        assert cdp.closed_puts == []
+        ids.write_text("A\n", encoding="utf-8")
+        r2 = run("cdp_close.py", str(ids), "--host", "127.0.0.1",
+                 "--port", str(cdp.port), "--expect", str(exp),
+                 "--browser", "chrome")
+        assert r2.returncode == 0, r2.stderr + r2.stdout
+        assert "B" in cdp.tabs  # bystander stayed open
+
+
+def test_last_page_guard_unit():
+    from sweep_lib import TabRecord, last_page_guard
+
+    def rec(i):
+        return TabRecord(id=i, url=f"https://ex.com/{i}", title=i)
+
+    # singleton close -> refuse
+    with pytest.raises(ValueError, match="zero page tabs"):
+        last_page_guard([rec("A")], [rec("A")])
+    # bystander remains -> pass
+    last_page_guard([rec("A")], [rec("A"), rec("B")])
+    # empty close set is a no-op, never a refusal
+    last_page_guard([], [rec("A")])
 
 
 def test_cdp_close_flags_unexpected_disappearance(tmp_path):

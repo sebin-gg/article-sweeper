@@ -563,6 +563,33 @@ def diff_tab_sets(before: list[TabRecord],
     }
 
 
+def last_page_guard(candidates, live_pages: list[TabRecord]) -> None:
+    """Refuse a close set that would leave the browser with zero page tabs.
+
+    Verified live (Windows, Thorium): closing a browser's only page tab
+    exits the whole browser process — the sweep loses the endpoint and
+    any further tabs it was supposed to leave open. `candidates` are the
+    revalidated close records, `live_pages` the fresh pre-close page
+    list; the guard fires when closing every candidate would exhaust the
+    pages. Note a singleton browser is exactly the case the guard can
+    detect with certainty; multi-window "last tab of the last window"
+    variants are not visible over CDP and stay out of scope.
+
+    Raises ValueError with an actionable message. Callers that genuinely
+    want the shutdown behavior may bypass it explicitly (CLI:
+    --allow-last-tab); the default is to refuse.
+    """
+    cand_ids = {c.id for c in candidates}
+    remaining = sum(1 for t in live_pages if t.id not in cand_ids)
+    if candidates and remaining == 0:
+        raise ValueError(
+            f"refusing: closing {len(candidates)} tab(s) would leave "
+            f"the browser with zero page tabs; verified live (Thorium) "
+            f"this exits the whole browser. Close or leave another tab "
+            f"open first, or rerun with --allow-last-tab to accept the "
+            f"shutdown.")
+
+
 # ---------------------------------------------------------------------------
 # CDP endpoint identity
 # ---------------------------------------------------------------------------

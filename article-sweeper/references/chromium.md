@@ -36,8 +36,14 @@ Brave, Edge, Vivaldi, or Opera.
 >   Windows (the 1.3.4 poll guard stays). **Operational quirk:** closing
 >   the browser's only page tab exits Thorium entirely — the post-close
 >   recount then finds the endpoint gone (connection refused), which is
->   the expected outcome, not a failure. (Brave remains verified in WSL
->   only; no Windows run yet.)
+>   the expected outcome, not a failure.
+> - Brave `Chrome/153.0.8010.53` (Chromium 153 base) on port 9225 —
+>   full pass on Windows: vendor-blind product (plain `Chrome/...`, no
+>   Brave token in Browser or UA — unlike the WSL-era builds) + process
+>   proof (`--expect-cmd brave`, see 1.3.7) → close-one of two article
+>   tabs (`1/1`, exit 0); bystander tab stayed open and the browser
+>   alive (last-tab guard honored). Its earlier verification was
+>   WSL-only (command-line fragment check).
 > - Vivaldi `Chrome/8.2.4133.68` (Chromium 152 base) on port 9227 —
 >   full pass: identity → enumerate → close-one (`1/1`, exit 0) → live
 >   recount. **Vendor quirks (verified live, Windows):** `/json/version`
