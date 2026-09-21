@@ -68,6 +68,14 @@ def _looks_like_copy(path: Path, scratch_roots: list[Path] | None = None) -> boo
     return False
 
 
+def _no_copy_refused(src: Path, scratch_arg: str) -> bool:
+    """True when --no-copy input must be refused (not a plausible copy)."""
+    roots = [Path(tempfile.gettempdir()) / "opencode"]
+    if scratch_arg:
+        roots.append(Path(scratch_arg))
+    return not _looks_like_copy(src, roots)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("session_path")
@@ -99,10 +107,7 @@ def main(argv=None):
         pass
 
     if args.no_copy:
-        roots = [Path(tempfile.gettempdir()) / "opencode"]
-        if args.scratch:
-            roots.append(Path(args.scratch))
-        if not _looks_like_copy(src, roots):
+        if _no_copy_refused(src, args.scratch):
             raise SystemExit(
                 f"refusing --no-copy on {src}: not a scratch copy "
                 "(no .copy. marker and not inside a scratch dir — "
@@ -130,9 +135,7 @@ def main(argv=None):
         doc = decode_mozlz4(raw)
     except OSError as exc:
         raise SystemExit(f"cannot read {work}: {exc}")
-    except RuntimeError as exc:
-        raise SystemExit(str(exc))
-    except ValueError as exc:
+    except (RuntimeError, ValueError) as exc:
         raise SystemExit(str(exc))
     finally:
         if made_copy and not args.keep_copy:

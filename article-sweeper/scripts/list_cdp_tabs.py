@@ -65,11 +65,12 @@ def main(argv=None):
             print(f"endpoint owner pid: {owner}", file=sys.stderr)
     # Trust boundary: local-operator CLI tool — argv path comes from the
     # invoking operator (same trust as shell redirection), validated
-    # (is-file check) before reading. NOSONAR marks a reviewed S8707.
+    # (is-file check) before reading. NOSONAR(pythonsecurity:S8707)
+    # marks a reviewed finding.
     p = Path(args.cdp_json)
     if not p.is_file():
         raise SystemExit(f"not a file: {args.cdp_json}")
-    with open(p, encoding="utf-8") as fh:  # NOSONAR pythonsecurity:S8707
+    with open(p, encoding="utf-8") as fh:  # NOSONAR(pythonsecurity:S8707)
         data = json.load(fh)
     try:
         pages = parse_cdp_list(data, endpoint=args.endpoint,

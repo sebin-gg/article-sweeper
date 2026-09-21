@@ -40,6 +40,9 @@ DEFAULT_PORTS = {
     "opera": 9228,
 }
 
+PROC_ROOT = "/proc"
+_HTTPS_URL_PAT = r"https?://"
+
 
 def validate_port(port) -> int:
     """Validate a TCP port. Raises ValueError unless 1 <= port <= 65535."""
@@ -205,6 +208,51 @@ REDIRECT_PATH_RE = re.compile(
 REDIRECT_PARAMS = ("u", "url", "redirect", "dest", "destination", "to")
 
 
+def unwrap_google_url(host: str, p: urllib.parse.ParseResult,
+                       qs: dict[str, list[str]]) -> str | None:
+    """Unwrap google.com/url?q=<real> if this is a Google redirect."""
+    if host not in ("google.com", "www.google.com") or p.path != "/url":
+        return None
+    real = (qs.get("q") or qs.get("url") or [None])[0]
+    if real and re.match(_HTTPS_URL_PAT, real):
+        return real
+    return None
+
+
+def unwrap_tracking_click(host: str, p: urllib.parse.ParseResult,
+                          qs: dict[str, list[str]]) -> str | None:
+    """Unwrap tldr/inflection click-tracking wrappers.
+
+    Tries each query param for an absolute URL first, then a path-embedded
+    target (e.g. ``/CL0/https://example.com/...``).
+    """
+    if host not in ("tracking.tldrnewsletter.com",
+                     "tracking.inflection.io"):
+        return None
+    for vals in qs.values():
+        for v in vals:
+            if re.match(_HTTPS_URL_PAT, v or ""):
+                return v
+    m = re.search(f"/({_HTTPS_URL_PAT}.+)$", p.path)
+    if m:
+        return urllib.parse.unquote(m.group(1))
+    return None
+
+
+def unwrap_generic_redirect(host: str, p: urllib.parse.ParseResult,
+                            qs: dict[str, list[str]]) -> str | None:
+    """Unwrap ``?u=``, ``?url=``, ``?redirect=``, ... on known wrapper
+    domains or redirect-shaped paths (kit-mail ``lmu…`` paths included)."""
+    if host not in WRAPPER_DOMAINS and not REDIRECT_PATH_RE.search(p.path or ""):
+        return None
+    for key in REDIRECT_PARAMS:
+        vals = qs.get(key) or []
+        for v in vals:
+            if re.match(_HTTPS_URL_PAT, v or ""):
+                return v
+    return None
+
+
 def unwrap_tracking_wrapper(url: str) -> str:
     """Unwrap known redirect/tracking wrappers deterministically.
 
@@ -220,31 +268,11 @@ def unwrap_tracking_wrapper(url: str) -> str:
         return url
     host = (p.hostname or "").lower()
     qs = urllib.parse.parse_qs(p.query, keep_blank_values=True)
-
-    # google.com/url?q=<real>
-    if host in ("google.com", "www.google.com") and p.path == "/url":
-        real = (qs.get("q") or qs.get("url") or [None])[0]
-        if real and re.match(r"https?://", real):
-            return real
-    # tldr / inflection click-tracking: first absolute-URL param wins
-    if host in ("tracking.tldrnewsletter.com", "tracking.inflection.io"):
-        for vals in qs.values():
-            for v in vals:
-                if re.match(r"https?://", v or ""):
-                    return v
-        # path-embedded target e.g. /CL0/https://example.com/...
-        m = re.search(r"/(https?://.+)$", p.path)
-        if m:
-            return urllib.parse.unquote(m.group(1))
-    # Generic redirect params (`?u=`, `?url=`, `?redirect=`, …): ONLY on
-    # known wrapper domains or redirect-shaped paths (kit-mail `lmu…`
-    # paths included). Never on arbitrary hosts.
-    if host in WRAPPER_DOMAINS or REDIRECT_PATH_RE.search(p.path or ""):
-        for key in REDIRECT_PARAMS:
-            vals = qs.get(key) or []
-            for v in vals:
-                if re.match(r"https?://", v or ""):
-                    return v
+    for wrapper in (unwrap_google_url, unwrap_tracking_click,
+                    unwrap_generic_redirect):
+        result = wrapper(host, p, qs)
+        if result is not None:
+            return result
     return url
 
 
@@ -301,6 +329,42 @@ def dedupe_tabs(tabs: list[dict]) -> dict[str, list[dict]]:
 # Log redaction
 # ---------------------------------------------------------------------------
 
+def _is_sensitive_userinfo(userinfo: str) -> bool:
+    """Return True when a URL ``userinfo`` segment (the ``user:pass`` part
+    before ``@``) carries a password/token that must be redacted from logs.
+
+    Merges the two original ``redact_url`` branches that both produced the same
+    redacted netloc ``***@hostport`` (S1871 duplicate-branch report): a ``:``
+    password separator, a sensitive-param name match, or a long opaque string
+    (``len >= 16``).
+    """
+    if userinfo.lower() in SENSITIVE_PARAMS:
+        return True
+    if len(userinfo) >= 16:
+        return True
+    return ":" in userinfo
+
+
+def _redact_fragment(frag: str) -> str:
+    """Redact an OAuth-style URL fragment (``#access_token=abc&...``).
+
+    Returns ``***`` when the fragment carries sensitive token keys or is a
+    long opaque hex/base64 blob; otherwise returns the fragment unchanged.
+    """
+    if not frag:
+        return frag
+    fpairs = urllib.parse.parse_qsl(frag, keep_blank_values=True)
+    if any(k.lower() in SENSITIVE_PARAMS or k.lower() in
+           ("access_token", "refresh_token") for k, _ in fpairs):
+        return "&".join(
+            f"{k}=***" if k.lower() in SENSITIVE_PARAMS or k.lower()
+            in ("access_token", "refresh_token") else f"{k}={v}"
+            for k, v in fpairs) if fpairs else "***"
+    if len(frag) >= 20 and re.fullmatch(r"[A-Za-z0-9\-_%.~+/=]+", frag):
+        return "***"
+    return frag
+
+
 def redact_url(url: str) -> str:
     """Redact sensitive values for logs/scratch output.
 
@@ -320,24 +384,12 @@ def redact_url(url: str) -> str:
         query = urllib.parse.urlencode(red, doseq=True)
         # Fragment: redact whole fragment when it carries token-like keys
         # (e.g. #access_token=abc&token_type=bearer).
-        frag = p.fragment
-        if frag:
-            fpairs = urllib.parse.parse_qsl(frag, keep_blank_values=True)
-            if any(k.lower() in SENSITIVE_PARAMS or k.lower() in
-                   ("access_token", "refresh_token") for k, _ in fpairs):
-                frag = "&".join(
-                    f"{k}=***" if k.lower() in SENSITIVE_PARAMS or k.lower()
-                    in ("access_token", "refresh_token") else f"{k}={v}"
-                    for k, v in fpairs) if fpairs else "***"
-            elif len(frag) >= 20 and re.fullmatch(r"[A-Za-z0-9\-_%.~+/=]+", frag):
-                frag = "***"
+        frag = _redact_fragment(p.fragment)
         # Userinfo: never log passwords/tokens in user:pass@host.
         netloc = p.netloc
         if "@" in netloc:
             userinfo, _, hostport = netloc.rpartition("@")
-            if ":" in userinfo or userinfo.lower() in SENSITIVE_PARAMS:
-                netloc = "***@" + hostport
-            elif len(userinfo) >= 16:
+            if _is_sensitive_userinfo(userinfo):
                 netloc = "***@" + hostport
         # Path: mask long hex/base64/jwt-looking segments (invite codes,
         # share tokens) while keeping human-readable slugs.
@@ -667,6 +719,43 @@ def _ua_fallback_matches(browser: str, user_agent: str) -> bool:
     return any(h in ua for h in hints)
 
 
+def _fetch_version_payload(host: str, port: int, *, fetch_version,
+                            timeout: int) -> dict:
+    """Fetch /json/version from a CDP endpoint (real HTTP or injected stub)."""
+    if fetch_version is not None:
+        try:
+            return fetch_version(host, port)
+        except Exception as exc:
+            raise ValueError(f"CDP endpoint {host}:{port} unreachable: {exc}")
+    import urllib.request as _urlreq
+    import json as _json
+    url = cdp_url(host, port, "/json/version")  # NOSONAR python:S5332
+    try:
+        with _urlreq.urlopen(url, timeout=timeout) as resp:
+            return _json.loads(resp.read().decode("utf-8", "replace"))
+    except Exception as exc:
+        raise ValueError(f"CDP endpoint {host}:{port} unreachable: {exc}")
+
+
+def _check_browser_product(payload: dict, expect_browser: str,
+                            host: str, port: int) -> dict:
+    """Validate Browser product + UA fallback / Vivaldi mismatch; return payload
+    or raise ValueError on mismatch."""
+    if not isinstance(payload, dict):
+        raise ValueError(f"CDP /json/version at {host}:{port} not an object")
+    product = str(payload.get("Browser", "") or "")
+    if expect_browser:
+        want = expect_browser.strip().lower()
+        if want and not browser_matches_product(want, product):
+            ua = str(payload.get("User-Agent", "") or "")
+            if not (_ua_fallback_matches(want, ua)
+                    or _vivaldi_version_mismatch(want, product, ua)):
+                raise ValueError(
+                    f"endpoint {host}:{port} reports Browser={product!r}, "
+                    f"expected browser containing {expect_browser!r}; refusing")
+    return payload
+
+
 def check_endpoint_identity(host: str, port: int, *,
                             expect_browser: str = "",
                             fetch_version=None,
@@ -686,41 +775,11 @@ def check_endpoint_identity(host: str, port: int, *,
     so a stray local CDP service on a reused port cannot be driven by
     mistake.
     """
-    import urllib.request as _urlreq
-    import json as _json
     host = validate_host(host)
     port = validate_port(port)
-    if fetch_version is not None:
-        try:
-            payload = fetch_version(host, port)
-        except Exception as exc:
-            raise ValueError(f"CDP endpoint {host}:{port} unreachable: {exc}")
-    else:
-        # CDP loopback-only by design: validate_host() restricts host to
-        # 127.0.0.1/localhost/::1, CDP offers no HTTPS endpoint.
-        url = cdp_url(host, port, "/json/version")  # NOSONAR python:S5332
-        try:
-            with _urlreq.urlopen(url, timeout=timeout) as resp:
-                payload = _json.loads(resp.read().decode("utf-8", "replace"))
-        except Exception as exc:
-            raise ValueError(f"CDP endpoint {host}:{port} unreachable: {exc}")
-    if not isinstance(payload, dict):
-        raise ValueError(f"CDP /json/version at {host}:{port} not an object")
-    product = str(payload.get("Browser", "") or "")
-    if expect_browser:
-        want = expect_browser.strip().lower()
-        if want and not browser_matches_product(want, product):
-            # Some vendors hide their identity from the Browser field
-            # (verified live: Opera 136 reports "Chrome/152...") but leave
-            # a distinctive token in User-Agent. UA fallback is
-            # conservative: only vendor-distinctive tokens may rescue.
-            ua = str(payload.get("User-Agent", "") or "")
-            if not (_ua_fallback_matches(want, ua)
-                    or _vivaldi_version_mismatch(want, product, ua)):
-                raise ValueError(
-                    f"endpoint {host}:{port} reports Browser={product!r}, "
-                    f"expected browser containing {expect_browser!r}; refusing")
-    return payload
+    payload = _fetch_version_payload(host, port, fetch_version=fetch_version,
+                                      timeout=timeout)
+    return _check_browser_product(payload, expect_browser, host, port)
 
 
 # ---------------------------------------------------------------------------
@@ -745,27 +804,22 @@ def _port_inodes(net_tcp_text: str, port: int) -> set[int]:
     return inodes
 
 
-def find_pids_listening_on(port: int, *, proc_root: str = "/proc") -> list[int]:
-    """PIDs holding a LISTEN socket on `port` (Linux /proc only).
-
-    Product checks prove *which browser family* answers a port, not
-    *which process*. When the workflow launched the browser itself, this
-    maps the port back to owner PID(s) so the command line (binary,
-    --user-data-dir) can be confirmed. Raises RuntimeError off Linux.
-    `proc_root` is injectable for tests.
-    """
-    port = validate_port(port)
-    if os.name != "posix":
-        raise RuntimeError("process lookup needs Linux /proc")
+def _scan_tcp_tables(proc_root: str, port: int) -> set[int]:
+    """Collect inodes of LISTEN sockets on `port` from /proc/net/tcp(+6)."""
     inodes: set[int] = set()
-    for table in ("net/tcp", "net/tcp6"):  # IPv6 listeners live in tcp6
+    for table in ("net/tcp", "net/tcp6"):
         path = os.path.join(proc_root, table)
         try:
             with open(path, encoding="utf-8") as fh:
                 text = fh.read()
         except OSError:
-            continue  # table absent (e.g. IPv6 disabled) is not fatal
+            continue
         inodes |= _port_inodes(text, port)
+    return inodes
+
+
+def _resolve_pids_from_inodes(proc_root: str, inodes: set[int]) -> list[int]:
+    """Map socket inodes to PIDs by scanning /proc/<pid>/fd symlinks."""
     if not inodes:
         return []
     want = {f"socket:[{i}]" for i in inodes}
@@ -781,7 +835,7 @@ def find_pids_listening_on(port: int, *, proc_root: str = "/proc") -> list[int]:
         try:
             fds = os.listdir(fddir)
         except OSError:
-            continue  # raced exit / permission denied
+            continue
         for fd in fds:
             try:
                 target = os.readlink(os.path.join(fddir, fd))
@@ -793,7 +847,23 @@ def find_pids_listening_on(port: int, *, proc_root: str = "/proc") -> list[int]:
     return sorted(pids)
 
 
-def read_process_cmdline(pid: int, *, proc_root: str = "/proc") -> str:
+def find_pids_listening_on(port: int, *, proc_root: str = PROC_ROOT) -> list[int]:
+    """PIDs holding a LISTEN socket on `port` (Linux /proc only).
+
+    Product checks prove *which browser family* answers a port, not
+    *which process*. When the workflow launched the browser itself, this
+    maps the port back to owner PID(s) so the command line (binary,
+    --user-data-dir) can be confirmed. Raises RuntimeError off Linux.
+    `proc_root` is injectable for tests.
+    """
+    port = validate_port(port)
+    if os.name != "posix":
+        raise RuntimeError("process lookup needs Linux " + PROC_ROOT)
+    inodes = _scan_tcp_tables(proc_root, port)
+    return _resolve_pids_from_inodes(proc_root, inodes)
+
+
+def read_process_cmdline(pid: int, *, proc_root: str = PROC_ROOT) -> str:
     """NUL-joined command line of `pid` (Linux /proc only)."""
     try:
         with open(os.path.join(proc_root, str(int(pid)), "cmdline"),
@@ -878,7 +948,7 @@ def verify_endpoint_process_windows(port: int, expect_cmd: str, *,
 
 
 def verify_endpoint_process(port: int, expect_cmd: str, *,
-                            proc_root: str = "/proc") -> int:
+                            proc_root: str = PROC_ROOT) -> int:
     """Confirm a listener on `port` runs a command containing `expect_cmd`.
 
     Pass a fragment of the launch command this workflow used (binary name
@@ -937,7 +1007,7 @@ def confirm_endpoint(host: str, port: int, *, expect_browser: str,
     try:
         payload = check_endpoint_identity(host, port,
                                           expect_browser=expect_browser)
-    except ValueError as exc:
+    except ValueError:
         if (not expect_cmd
                 or browser_matches_product(expect_browser, "chrome")):
             raise
