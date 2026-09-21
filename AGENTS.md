@@ -38,12 +38,13 @@ The CI (`lint.yml`) runs skill-spec validation + lint + test on every push/PR.
 
 ## Push / PR (how changes land)
 
-- **Prefer PRs over direct pushes to `main`.** Convention (not remote
-  enforcement — `main` is currently unprotected, no required checks):
-  branch off up-to-date `main`, push the branch, open a PR, wait for CI.
-  Never push without green tests (`python -m pytest tests/ -q` locally
-  first). Consider enabling branch protection with required status checks
-  so this rule is enforced, not just documented.
+- **Prefer PRs over direct pushes to `main`.** Remote enforcement is on:
+  `main` requires the `lint` + `test` status checks (strict, so PRs can't
+  merge red) and blocks force-pushes/deletions. Direct pushes still land
+  immediately — checks then run on the push and a red `main` is visible
+  to everyone — so never push without green tests
+  (`python -m pytest tests/ -q` locally first). (`enforce_admins` is off
+  as an emergency hatch — don't use it to land red code.)
 - **Flow:** `git fetch origin` → branch off up-to-date `main` → commit (`conventional` only) → push branch → open a PR → wait for every gate to finish → merge when all green.
 - **Code quality:** keep functions simple. Prefer pure functions in `sweep_lib.py` over agent-side logic.
 
