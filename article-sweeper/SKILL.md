@@ -4,7 +4,7 @@ description: Summarize open article tabs in Thorium, Chromium, Chrome, Brave, Ed
 license: MIT
 allowed-tools: Bash Read Edit Write Task WebFetch WebSearch
 metadata:
-  version: "1.3.3"
+  version: "1.3.4"
   tags: "browser,tabs,summarize,thorium,chromium,firefox"
 ---
 
@@ -122,7 +122,11 @@ thorium 9222, chromium 9223, chrome 9224, brave 9225, edge 9226, vivaldi
 9227, opera 9228; pick a free one on collision). Chrome 136+ ignores
 `--remote-debugging-port` on the default profile — it needs a dedicated
 `--user-data-dir` (see `references/dev-mode.md`); never claim to sweep
-tabs that are not visible in the debugging instance.
+tabs that are not visible in the debugging instance. Exception: Chrome
+144+ with a host Browser Use / MCP capability can reach the live session
+through the user-consent flow (`chrome://inspect/#remote-debugging` +
+approval dialog) — see dev-mode.md, and only via that host capability,
+never raw CDP.
 
 ```bash
 curl -s http://127.0.0.1:<port>/json/list > $SCRATCH/cdp.json

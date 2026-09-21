@@ -41,6 +41,44 @@ google-chrome --user-data-dir="$HOME/.config/google-chrome-sweeper" \
   honor the flag on the default profile today, but treat that as
   vendor-specific behavior: verify per browser, never assume.
 
+## Chrome existing session via user consent (Chrome 144+, host-dependent)
+
+Chrome M144+ offers a consent-based alternative that reaches the user's
+*actual live tabs* instead of a second profile: the user enables Remote
+Debugging at `chrome://inspect/#remote-debugging`, and Chrome shows a
+permission dialog for every incoming debugging connection, plus a
+"controlled by automated test software" banner while active
+(see "Let your Coding Agent debug your browser session with Chrome
+DevTools MCP", Chrome for Developers blog; `chrome-devtools-mcp`
+`docs/advanced-usage.md`).
+
+Limits that matter for this skill (verified from those docs, not
+assumed):
+
+- The supported client is a **host Browser Use / MCP capability**
+  (e.g. `chrome-devtools-mcp --autoConnect`), not this skill's raw
+  `curl`-to-CDP local scripts. Do not claim the consent flow opens a
+  plain CDP HTTP port for the scripts — route it through the host
+  capability, or stay on the dedicated-profile path.
+- Requires Chrome ≥ 144 and a host that actually exposes the MCP/Browser
+  Use connection. If either is missing, fall back to the dedicated
+  profile (or session-file summary + printed close list).
+- Expect friction by design: approval is per connection (no persistent
+  "always allow"; a persist-permission request was declined upstream),
+  parallel clients can stack multiple dialogs, and the consent banner is
+  always visible. Never auto-click approvals; never treat a missing
+  approval as consent.
+- The permission step is a genuine trust boundary, not an annoyance:
+  the session is the user's live logged-in Chrome. State that plainly
+  when asking.
+
+Suggested agent wording: "I found your live Chrome, but I can't reach
+its tabs from here. If your setup includes browser automation, you can
+grant it access: open `chrome://inspect/#remote-debugging`, enable
+Remote Debugging, and approve Chrome's permission dialog. Otherwise
+I'll use a separate debugging profile (your normal tabs stay out of
+scope) or summarize without closing."
+
 ## Per-browser endpoints (no single global port)
 
 Multiple Chromium-family browsers cannot share one debugging endpoint.

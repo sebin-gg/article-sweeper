@@ -3,6 +3,18 @@
 All notable changes to this skill follow Keep a Changelog. Versions use
 semver and match `metadata.version` in SKILL.md frontmatter.
 
+## [1.3.4] - 2026-09-21
+
+Added:
+
+- Documented Chrome 144+ user-consent existing-session path
+  (`chrome://inspect/#remote-debugging` + per-connection approval
+  dialog) as a host-capability-routed alternative to the dedicated
+  profile, with explicit limits: MCP/Browser Use hosts only (not raw
+  CDP scripts), Chrome ≥ 144 required, per-connection friction is by
+  design. Sourced from Chrome for Developers + chrome-devtools-mcp
+  docs; not live-tested from here (would touch a real user session).
+
 ## [1.3.3] - 2026-09-21
 
 Verified:
