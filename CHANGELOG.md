@@ -36,6 +36,12 @@ Changed:
   actions, SHA-pinned actions, weekly schedule + PR/push triggers).
   The default-setup API is not available on this plan, so the scanner
   is defined as a versioned workflow instead.
+- `sweep_lib.endpoint_gone_confirmed()` (new in this version) builds
+  its probe URL via `cdp_url()` instead of a second `http://` format
+  string — one URL builder, loopback-only by construction — and its
+  exception mapping moved into the pure `_probe_failure_state()`
+  helper (behavior unchanged; clears the SonarCloud S5332/S3776
+  findings on the new code).
 
 ## [1.3.9] - 2026-09-21
 

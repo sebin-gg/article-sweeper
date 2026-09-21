@@ -1278,9 +1278,46 @@ def test_endpoint_gone_confirmed_classifications():
     else:
         assert r == "refused", r
 
-    # inconclusive: unroutable address times out -> fail closed (None)
-    assert endpoint_gone_confirmed("10.255.255.1", 9225, attempts=1,
-                                   timeout=0.4) is None
+    # inconclusive: TCP connects (listening backlog) but no HTTP response
+    # ever arrives -> timeout -> fail closed (None)
+    silent = _socket.socket()
+    silent.bind(("127.0.0.1", 0))
+    silent.listen(1)
+    try:
+        assert endpoint_gone_confirmed("127.0.0.1", silent.getsockname()[1],
+                                       attempts=1, timeout=0.4) is None
+    finally:
+        silent.close()
+
+    # loopback-only by construction: the probe URL comes from cdp_url()
+    with pytest.raises(ValueError):
+        endpoint_gone_confirmed("10.255.255.1", 9225)
+
+
+def test_probe_failure_state_classifications():
+    from sweep_lib import _probe_failure_state as classify
+    import urllib.error
+
+    # urlopen wraps socket errors in URLError: the inner reason decides
+    assert classify(
+        urllib.error.URLError(ConnectionRefusedError(61, "refused")),
+        None) == "refused"
+    assert classify(
+        urllib.error.URLError(ConnectionResetError(104, "reset")),
+        None) == "dead"
+    assert classify(
+        urllib.error.URLError(ConnectionAbortedError(103, "aborted")),
+        None) == "dead"
+    assert classify(urllib.error.URLError(TimeoutError("timed out")),
+                    "dead") is None  # URL-level timeout: inconclusive
+    # direct socket errors (no URLError wrapper)
+    assert classify(ConnectionRefusedError(61, "refused"), None) == "refused"
+    assert classify(ConnectionResetError(104, "reset"), "refused") == "dead"
+    # bare OSError: keeps an already-proven refusal, else inconclusive
+    assert classify(TimeoutError("timed out"), "refused") == "refused"
+    assert classify(OSError("weird"), "refused") == "refused"
+    assert classify(TimeoutError("timed out"), "dead") is None
+    assert classify(OSError("weird"), None) is None
 
 
 def test_last_page_guard_unit():
