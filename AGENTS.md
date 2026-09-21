@@ -33,12 +33,17 @@ The CI (`lint.yml`) runs skill-spec validation + lint + test on every push/PR.
 
 ## Test structure
 
-- `tests/test_sweep_lib.py` — behavioral tests with mocked CDP and Firefox session fixtures. Covers: port/host validation, URL unwrap/canonicalize, dedupe, classifier, CDP parse/validation, close candidate revalidation, diff sets, atomic append, recount-and-fix-header, Firefox decode + copy + read-failure cleanup, session freshness.
+- `tests/test_sweep_lib.py` — behavioral tests with mocked CDP and Firefox session fixtures, plus a fake in-process CDP service for CLI integration. Covers: port/host validation, URL unwrap/canonicalize, dedupe, classifier, CDP parse/validation, endpoint identity (+vendor aliases), close candidate revalidation, diff sets, atomic append, recount-and-fix-header (incl. concurrent), Firefox decode + copy + read-failure cleanup, session freshness.
 - Add a test for every new rule in `sweep_lib.py`. No new behavior without a test.
 
 ## Push / PR (how changes land)
 
-- **Never push straight to `main` without CI.** The remote enforces that changes come through a PR with passing tests. Before pushing anything, `git fetch origin` and rebase/merge the latest `main`.
+- **Prefer PRs over direct pushes to `main`.** Convention (not remote
+  enforcement — `main` is currently unprotected, no required checks):
+  branch off up-to-date `main`, push the branch, open a PR, wait for CI.
+  Never push without green tests (`python -m pytest tests/ -q` locally
+  first). Consider enabling branch protection with required status checks
+  so this rule is enforced, not just documented.
 - **Flow:** `git fetch origin` → branch off up-to-date `main` → commit (`conventional` only) → push branch → open a PR → wait for every gate to finish → merge when all green.
 - **Code quality:** keep functions simple. Prefer pure functions in `sweep_lib.py` over agent-side logic.
 

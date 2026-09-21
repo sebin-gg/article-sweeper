@@ -11,9 +11,11 @@ type + scheme, not by substring):
 With --redact, sensitive query values are masked for logs.
 Endpoint/browser identity is printed to stderr so a bare tab id is never
 ambiguous when several browsers expose debugging at once.
-With --check-endpoint (+ --host/--port/--browser), /json/version is
-checked BEFORE enumeration output so a reused/wrong local port cannot
-lead to summarizing the wrong browser's tabs.
+With --check-endpoint (+ --host/--port/--browser, all required),
+/json/version is checked BEFORE enumeration output so a reused/wrong
+local port cannot lead to summarizing the wrong browser's tabs.
+--browser is mandatory there: attesting "some Chromium endpoint"
+without the expected identity is not allowed.
 """
 import argparse
 import json
@@ -43,9 +45,13 @@ def main(argv=None):
     if args.check_endpoint:
         if not args.host or not args.port:
             raise SystemExit("--check-endpoint needs --host and --port")
+        if not args.browser:
+            raise SystemExit("--check-endpoint needs --browser: refusing to "
+                             "attest an endpoint without the expected "
+                             "browser identity")
         try:
             check_endpoint_identity(args.host, args.port,
-                                    expect_browser=args.browser or "")
+                                    expect_browser=args.browser)
         except ValueError as exc:
             raise SystemExit(str(exc))
     p = Path(args.cdp_json)

@@ -42,15 +42,29 @@ from sweep_lib import (  # noqa: E402
 )
 
 
-def _looks_like_copy(path: Path) -> bool:
+def _looks_like_copy(path: Path, scratch_roots: list[Path] | None = None) -> bool:
+    """Decide whether --no-copy input is plausibly already a scratch copy.
+
+    Accepts paths that EITHER carry the `.copy.` naming marker (written by
+    copy_session_safe) OR resolve inside a known scratch root (the default
+    `<tempdir>/opencode` dir or an explicit `--scratch` dir), checked with
+    directory-boundary containment — never a substring test, so a live
+    profile path that merely contains the text "opencode" is refused.
+    """
     name = path.name
     if ".copy." in name or name.endswith(".copy"):
         return True
-    # scratch dir default contains /opencode/ (explicit copy location);
-    # a bare system-temp path alone does NOT count (pytest tmp lives
-    # under temp too, and the live profile never lives under opencode).
-    if "opencode" in str(path):
-        return True
+    roots = list(scratch_roots or [])
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return False
+    for root in roots:
+        try:
+            resolved.relative_to(Path(root).resolve())
+            return True
+        except (OSError, ValueError, RuntimeError):
+            continue
     return False
 
 
@@ -73,10 +87,10 @@ def main(argv=None):
 
     info = session_freshness(src)
     if info.get("backup_newer"):
-        print("WARNING: a sessionstore-backups file is NEWER than "
-              "sessionstore.jsonlz4; state may be stale/incomplete. "
-              "Firefox may still be running or may have crashed; "
-              "treat output as a snapshot, not live ground truth.",
+        print(f"WARNING: sessionstore-backups/{info.get('newest_backup')} "
+              "is NEWER than sessionstore.jsonlz4; state may be "
+              "stale/incomplete. Firefox may still be running or may have "
+              "crashed; treat output as a snapshot, not live ground truth.",
               file=sys.stderr)
     try:
         age = time.time() - info.get("mtime", time.time())
@@ -85,10 +99,14 @@ def main(argv=None):
         pass
 
     if args.no_copy:
-        if not _looks_like_copy(src):
+        roots = [Path(tempfile.gettempdir()) / "opencode"]
+        if args.scratch:
+            roots.append(Path(args.scratch))
+        if not _looks_like_copy(src, roots):
             raise SystemExit(
-                f"refusing --no-copy on {src}: not a scratch/temp copy path "
-                "(copy the live session file first or drop --no-copy)")
+                f"refusing --no-copy on {src}: not a scratch copy "
+                "(no .copy. marker and not inside a scratch dir — "
+                "copy the live session file first or drop --no-copy)")
         work = src
         made_copy = False
     else:
@@ -116,7 +134,10 @@ def main(argv=None):
         raise SystemExit(str(exc))
     finally:
         if made_copy and not args.keep_copy:
-            cleanup_session_copy(work)
+            if not cleanup_session_copy(work):
+                print(f"WARNING: could not delete scratch copy {work}; "
+                      "delete it by hand (it may hold sensitive URLs).",
+                      file=sys.stderr)
 
     count = 0
     for window in doc.get("windows", []) or []:

@@ -3,6 +3,49 @@
 All notable changes to this skill follow Keep a Changelog. Versions use
 semver and match `metadata.version` in SKILL.md frontmatter.
 
+## [1.2.0] - 2026-09-21
+
+Breaking:
+
+- `cdp_close.py` requires `--browser` (endpoint identity is now always
+  strict; there is no "some Chromium endpoint" mode).
+- `list_cdp_tabs.py --check-endpoint` requires `--host`, `--port`, and
+  `--browser` together.
+- `cleanup_session_copy()` returns bool (True = nothing remains) instead
+  of None; decode warns on False.
+
+Fixed:
+
+- Generic redirect-param unwrapping only runs on known wrapper domains
+  or redirect-shaped paths — plain article URLs carrying `url=`/`to=`
+  params are never rewritten.
+- `recount_and_fix_header()` takes the same sidecar lock as
+  `atomic_append()`, so a concurrent append cannot be lost by a rewrite.
+- `--no-copy` accepts only the `.copy.` naming marker or containment in
+  a known scratch dir (boundary-checked); substring matching removed.
+- `copy_session_safe()` uses a unique destination per call (pid + random
+  token); concurrent sweeps no longer share one scratch file.
+- `TRACKING_PARAMS` drops `ref`/`referrer`/`spm` (not universally
+  tracking); tracking detection is case-insensitive.
+- SKILL.md no longer claims AMP/`?sk=`/author-subdomain collapsing —
+  near-duplicates stay separate for agent judgment.
+- `cleanup_session_copy()` uses directory-boundary containment and
+  reports failure instead of swallowing it.
+- `decode_mozlz4()` rejects non-object JSON; `session_freshness()`
+  scopes backups to `*.jsonlz4` and names the newest snapshot.
+- `endpoint_for()` accumulates into the caller's `taken` set.
+- SKILL.md states fetched pages/search results are untrusted data
+  (prompt-injection rule); AGENTS.md no longer claims PR enforcement
+  that `main` lacks.
+
+Added:
+
+- Vendor product aliases for endpoint identity (Edge=`Edg/`,
+  Opera=`OPR/`, Chromium≈Chrome).
+- Mocked CDP integration suite (fake in-process CDP service): list
+  check happy/wrong-browser, close happy/navigated/stays-listed/
+  unreachable/unexpected-drop/wrong-browser/dead-port.
+
 ## [1.1.1] - 2026-09-21
 
 Fixed:

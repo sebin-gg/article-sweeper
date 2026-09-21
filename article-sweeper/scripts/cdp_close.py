@@ -2,16 +2,18 @@
 
 Usage:
     python3 cdp_close.py <ids.txt> --expect <cdp-before.json>
-        [--port 9222] [--host 127.0.0.1]
-        [--browser chrome] [--endpoint 127.0.0.1:9222]
+        --browser chrome
+        [--port 9222] [--host 127.0.0.1] [--endpoint 127.0.0.1:9222]
 
 Safety (all mandatory, no bypass):
 - --expect is REQUIRED: ids are revalidated against the fresh /json/list
   *right before* closing. Ids that vanished or navigated
   (canonical-URL mismatch) are skipped, never closed blind. Ids missing
   from --expect abort the run (stale/forged close list).
-- --browser triggers a /json/version identity check so a stray local
-  CDP service on a reused port cannot be driven by mistake.
+- --browser is REQUIRED: the /json/version product string must identify
+  that browser (vendor aliases handled, e.g. Edge=`Edg/`, Opera=`OPR/`),
+  so a stray local CDP service on a reused port cannot be driven by
+  mistake. There is no "some Chromium endpoint" mode.
 - After closing, each target is re-fetched to confirm it disappeared;
   a bare HTTP 200 is NOT proof of close. Unverifiable closes (list
   unreachable post-close) are reported FAILED with non-zero exit.
@@ -79,7 +81,8 @@ def main(argv=None):
     ap.add_argument("--host", default=DEFAULT_HOST)
     ap.add_argument("--expect", default="", required=True,
                     help="REQUIRED: CDP /json/list dump for pre-close revalidation")
-    ap.add_argument("--browser", default="")
+    ap.add_argument("--browser", default="", required=True,
+                    help="REQUIRED: expected browser for /json/version identity")
     ap.add_argument("--endpoint", default="")
     args = ap.parse_args(argv)
 
@@ -93,11 +96,10 @@ def main(argv=None):
         raise SystemExit("refusing close: --expect is required (no blind close by id)")
 
     # Validate endpoint identity before touching any tab: a reused port
-    # may host a different CDP service. --browser makes the check strict
-    # (product must mention it); without it we still require /json/version
-    # to answer so we know SOMETHING chromium debugs that port.
+    # may host a different CDP service. --browser is mandatory and the
+    # product check is strict (vendor aliases handled in sweep_lib).
     try:
-        check_endpoint_identity(host, port, expect_browser=args.browser or "")
+        check_endpoint_identity(host, port, expect_browser=args.browser)
     except ValueError as exc:
         raise SystemExit(str(exc))
 

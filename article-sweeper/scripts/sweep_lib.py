@@ -10,6 +10,7 @@ All functions are pure/std-lib-only so CI can test them with mocks.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -85,10 +86,16 @@ def find_free_port(exclude: set[int] | None = None) -> int:
 
 
 def endpoint_for(browser: str, taken: set[int] | None = None) -> tuple[str, int]:
-    """Return (host, port) for a browser, avoiding collisions in `taken`."""
-    taken = set(taken or set())
+    """Return (host, port) for a browser, avoiding collisions in `taken`.
+
+    The caller's `taken` set is updated in place with the allocated port,
+    so repeated calls accumulate (allocate-then-record in one step).
+    """
+    if taken is None:
+        taken = set()
     preferred = DEFAULT_PORTS.get(browser.lower(), 0)
     if preferred and preferred not in taken:
+        taken.add(preferred)
         return DEFAULT_HOST, preferred
     port = find_free_port(taken)
     taken.add(port)
@@ -101,12 +108,21 @@ def endpoint_for(browser: str, taken: set[int] | None = None) -> tuple[str, int]
 
 #: Query params that are pure tracking and safe to drop. Everything else is
 #: preserved: pagination, language, revision, content-id params are meaningful.
+#: Deliberately conservative: generic names like `ref`, `referrer`, `spm`
+#: are NOT here — they are meaningful on some sites (section refs, vendor
+#: params), and dropping them would falsely merge distinct articles.
 TRACKING_PARAMS = frozenset({
     "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
     "utm_id", "gclid", "gbraid", "wbraid", "fbclid", "msclkid", "mc_cid",
-    "mc_eid", "igshid", "spm", "_hsenc", "_hsmi", "ref", "referrer",
+    "mc_eid", "igshid", "_hsenc", "_hsmi",
     "srsltid", "vero_conv", "vero_id", "yclid", "ttclid",
 })
+
+
+def _is_tracking_param(name: str) -> bool:
+    """Case-insensitive tracking-param test (`UTM_SOURCE` == `utm_source`)."""
+    low = (name or "").lower()
+    return low in TRACKING_PARAMS or low.startswith("utm_")
 
 #: Query params that must never appear in logs/scratch (tokens, invites).
 SENSITIVE_PARAMS = frozenset({
@@ -121,9 +137,29 @@ WRAPPER_DOMAINS = (
     "tracking.tldrnewsletter.com", "tracking.inflection.io",
 )
 
+#: Path shapes that mark a URL as a redirect endpoint (as opposed to an
+#: article that merely carries a `url=`-style parameter). The generic
+#: redirect-param scan below ONLY runs for WRAPPER_DOMAINS or these paths,
+#: so `https://example.com/article?url=https://other.com` is never
+#: rewritten. `lmu…` covers kit-mail click-tracking paths.
+REDIRECT_PATH_RE = re.compile(
+    r"/(url|redirect|redir|r|l|click|track/click|CL0|lmu\w*)(/|$|\?)",
+    re.I,
+)
+
+#: Param names that may carry a redirect target on a redirect endpoint.
+REDIRECT_PARAMS = ("u", "url", "redirect", "dest", "destination", "to")
+
 
 def unwrap_tracking_wrapper(url: str) -> str:
-    """Unwrap known redirect/tracking wrappers deterministically."""
+    """Unwrap known redirect/tracking wrappers deterministically.
+
+    Scoped by design: the generic redirect-param scan only applies to
+    known wrapper domains or redirect-shaped paths. Arbitrary article
+    URLs that happen to carry a `url=`/`to=` parameter are returned
+    unchanged (rewriting them would corrupt canonicalization, dedupe,
+    classification, and close authorization).
+    """
     try:
         p = urllib.parse.urlparse(url)
     except Exception:
@@ -146,12 +182,15 @@ def unwrap_tracking_wrapper(url: str) -> str:
         m = re.search(r"/(https?://.+)$", p.path)
         if m:
             return urllib.parse.unquote(m.group(1))
-    # kit-mail `lmu...` redirect paths carry the target in `u`/`url`/`redirect`
-    for key in ("u", "url", "redirect", "dest", "destination", "to"):
-        vals = qs.get(key) or []
-        for v in vals:
-            if re.match(r"https?://", v or ""):
-                return v
+    # Generic redirect params (`?u=`, `?url=`, `?redirect=`, …): ONLY on
+    # known wrapper domains or redirect-shaped paths (kit-mail `lmu…`
+    # paths included). Never on arbitrary hosts.
+    if host in WRAPPER_DOMAINS or REDIRECT_PATH_RE.search(p.path or ""):
+        for key in REDIRECT_PARAMS:
+            vals = qs.get(key) or []
+            for v in vals:
+                if re.match(r"https?://", v or ""):
+                    return v
     return url
 
 
@@ -183,7 +222,7 @@ def canonicalize_url(url: str) -> str:
     pairs = urllib.parse.parse_qsl(p.query, keep_blank_values=True)
     kept = sorted(
         (k, v) for k, v in pairs
-        if k not in TRACKING_PARAMS and not k.startswith("utm_")
+        if not _is_tracking_param(k)
     )
     query = urllib.parse.urlencode(kept, doseq=True)
     out = urllib.parse.urlunparse((scheme, host, path, "", query, ""))
@@ -476,6 +515,30 @@ def diff_tab_sets(before: list[TabRecord],
 # CDP endpoint identity
 # ---------------------------------------------------------------------------
 
+#: Vendor product tokens that identify a browser in /json/version's
+#: `Browser` string. Needed because vendors abbreviate: Edge reports
+#: `Edg/<ver>`, Opera `OPR/<ver>` — a naive `"edge" in product` check
+#: would reject the real Edge endpoint.
+BROWSER_PRODUCT_HINTS = {
+    "thorium": ("thorium",),
+    "chromium": ("chromium", "chrome"),
+    "chrome": ("chrome", "chromium"),
+    "brave": ("brave",),
+    "edge": ("edge", "edg/"),
+    "vivaldi": ("vivaldi",),
+    "opera": ("opera", "opr/"),
+}
+
+
+def browser_matches_product(browser: str, product: str) -> bool:
+    """True when the /json/version product string identifies `browser`."""
+    want = (browser or "").strip().lower()
+    prod = (product or "").lower()
+    if not want:
+        return False
+    hints = BROWSER_PRODUCT_HINTS.get(want, (want,))
+    return any(h in prod for h in hints)
+
 def check_endpoint_identity(host: str, port: int, *,
                             expect_browser: str = "",
                             fetch_version=None,
@@ -514,7 +577,7 @@ def check_endpoint_identity(host: str, port: int, *,
     product = str(payload.get("Browser", "") or "")
     if expect_browser:
         want = expect_browser.strip().lower()
-        if want and want not in product.lower():
+        if want and not browser_matches_product(want, product):
             raise ValueError(
                 f"endpoint {host}:{port} reports Browser={product!r}, "
                 f"expected browser containing {expect_browser!r}; refusing")
@@ -572,6 +635,25 @@ def _unlock_exclusive(fd, backend: str) -> None:
         pass
 
 
+@contextlib.contextmanager
+def _summary_lock(path: Path):
+    """Exclusive sidecar lock shared by append AND recount-and-rewrite.
+
+    Both writers must take the same `<file>.lock` or a recount rewrite
+    can clobber a concurrent append (lost entries). Mandatory on all
+    platforms (fcntl / msvcrt); never a silent no-op.
+    """
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    lock = p.with_suffix(p.suffix + ".lock")
+    with open(lock, "a+b") as lockfh:
+        backend = _lock_exclusive(lockfh)
+        try:
+            yield
+        finally:
+            _unlock_exclusive(lockfh, backend)
+
+
 def atomic_append(path: Path, lines: list[str]) -> None:
     """Append lines atomically: write-temp-in-same-dir + os.replace for the
     header-create step, then append under an exclusive sidecar lock so
@@ -581,34 +663,28 @@ def atomic_append(path: Path, lines: list[str]) -> None:
     Windows uses msvcrt.locking. No silent no-op fallback.
     """
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lock = path.with_suffix(path.suffix + ".lock")
-    with open(lock, "a+b") as lockfh:
-        backend = _lock_exclusive(lockfh)
-        try:
-            if not path.exists():
-                tmp = tempfile.NamedTemporaryFile(
-                    "w", dir=str(path.parent), delete=False, encoding="utf-8")
+    with _summary_lock(path):
+        if not path.exists():
+            tmp = tempfile.NamedTemporaryFile(
+                "w", dir=str(path.parent), delete=False, encoding="utf-8")
+            try:
+                tmp.write("".join(lines))
+                tmp.close()
+                os.replace(tmp.name, str(path))
+            except BaseException:
                 try:
-                    tmp.write("".join(lines))
-                    tmp.close()
-                    os.replace(tmp.name, str(path))
-                except BaseException:
-                    try:
-                        os.unlink(tmp.name)
-                    except OSError:
-                        pass
-                    raise
-            else:
-                with open(path, "a", encoding="utf-8") as fh:
-                    fh.write("".join(lines))
-                    fh.flush()
-                    try:
-                        os.fsync(fh.fileno())
-                    except OSError:
-                        pass
-        finally:
-            _unlock_exclusive(lockfh, backend)
+                    os.unlink(tmp.name)
+                except OSError:
+                    pass
+                raise
+        else:
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write("".join(lines))
+                fh.flush()
+                try:
+                    os.fsync(fh.fileno())
+                except OSError:
+                    pass
 
 
 def recount_entries(path: Path) -> int:
@@ -631,31 +707,36 @@ def recount_and_fix_header(path: Path) -> int:
     entries, rewrites the first `<digits> article tabs summarised.` line
     to the true count (atomic temp-file + replace), and returns the
     count. Files without such a header line are left untouched.
-    Run after all batches have appended (single writer at that point).
+
+    Takes the same sidecar lock as atomic_append(): without it, a
+    concurrent append landing between this read and the replace would be
+    silently lost. Safe to run while appends are still in flight; the
+    final call (after all batches) leaves header == true count.
     """
     p = Path(path)
-    try:
-        text = p.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return 0
-    n = sum(1 for line in text.splitlines() if line.startswith("## "))
-    new_text, subs = HEADER_COUNT_RE.subn(
-        lambda m: f"{n}{m.group(2)}", text, count=1)
-    if not subs:
-        return n
-    tmp = tempfile.NamedTemporaryFile(
-        "w", dir=str(p.parent), delete=False, encoding="utf-8")
-    try:
-        tmp.write(new_text)
-        tmp.close()
-        os.replace(tmp.name, str(p))
-    except BaseException:
+    with _summary_lock(p):
         try:
-            os.unlink(tmp.name)
-        except OSError:
-            pass
-        raise
-    return n
+            text = p.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return 0
+        n = sum(1 for line in text.splitlines() if line.startswith("## "))
+        new_text, subs = HEADER_COUNT_RE.subn(
+            lambda m: f"{n}{m.group(2)}", text, count=1)
+        if not subs:
+            return n
+        tmp = tempfile.NamedTemporaryFile(
+            "w", dir=str(p.parent), delete=False, encoding="utf-8")
+        try:
+            tmp.write(new_text)
+            tmp.close()
+            os.replace(tmp.name, str(p))
+        except BaseException:
+            try:
+                os.unlink(tmp.name)
+            except OSError:
+                pass
+            raise
+        return n
 
 
 # ---------------------------------------------------------------------------
@@ -676,16 +757,22 @@ def copy_session_safe(src: Path, scratch: Path, *,
     identical bytes (stable snapshot); retry until stable or retries
     run out, then raise. Enforces the documented 'copy first'
     invariant in code instead of relying on the agent remembering.
+    The destination name is unique per invocation (pid + random token):
+    two simultaneous sweeps must never share one scratch file for
+    write/read/cleanup. The `.copy.` marker is preserved so
+    cleanup_session_copy() still recognizes it.
     Callers must delete the returned copy when done (see
     cleanup_session_copy()).
     """
     import time as _time
+    import uuid as _uuid
     src = Path(src)
     if not src.is_file():
         raise FileNotFoundError(f"not a file: {src}")
     scratch = Path(scratch)
     scratch.mkdir(parents=True, exist_ok=True)
-    dst = scratch / (src.stem + ".copy" + src.suffix)
+    unique = f"{os.getpid()}.{_uuid.uuid4().hex[:12]}"
+    dst = scratch / f"{src.stem}.copy.{unique}{src.suffix}"
     last_err: Exception | None = None
     for _ in range(max(1, retries)):
         try:
@@ -720,26 +807,52 @@ def copy_session_safe(src: Path, scratch: Path, *,
     raise ValueError(f"could not get a stable session snapshot of {src}: {last_err}")
 
 
-def cleanup_session_copy(path: Path) -> None:
-    """Best-effort delete of a scratch session copy (privacy)."""
+def _is_within(child: Path, parent: Path) -> bool:
+    """Boundary-checked containment (no substring matching)."""
+    try:
+        child.resolve().relative_to(parent.resolve())
+        return True
+    except (OSError, ValueError, RuntimeError):
+        return False
+
+
+def cleanup_session_copy(path: Path) -> bool:
+    """Delete a scratch session copy. Returns True when nothing remains.
+
+    Only deletes paths that are EITHER named like a scratch copy
+    (`.copy.` marker from copy_session_safe) OR contained in the system
+    temp tree (directory-boundary checked, never substring). Anything
+    else is refused (returns False) so a caller bug can never delete an
+    arbitrary file. Deletion errors also return False instead of being
+    silently swallowed — for session copies holding sensitive URLs the
+    caller must warn, not assume cleanup happened.
+    """
     try:
         p = Path(path)
-        # Only delete inside temp/scratch-looking dirs or *.copy.* names;
-        # never delete an arbitrary path by mistake.
-        name = p.name
-        is_copy = ".copy." in name or name.endswith(".copy")
-        try:
-            is_tmp = tempfile.gettempdir() in str(p.resolve())
-        except OSError:
-            is_tmp = False
-        if is_copy or is_tmp:
-            try:
-                p.unlink(missing_ok=True)  # NOSONAR pythonsecurity:S8707
-            except TypeError:
-                if p.exists():
-                    p.unlink()  # NOSONAR pythonsecurity:S8707
     except Exception:
-        pass
+        return False
+    name = p.name
+    is_copy = ".copy." in name or name.endswith(".copy")
+    try:
+        in_tmp = _is_within(p, Path(tempfile.gettempdir()))
+    except Exception:
+        in_tmp = False
+    if not (is_copy or in_tmp):
+        return False
+    try:
+        p.unlink(missing_ok=True)  # NOSONAR pythonsecurity:S8707
+    except TypeError:
+        try:
+            if p.exists():
+                p.unlink()  # NOSONAR pythonsecurity:S8707
+        except OSError:
+            return False
+    except OSError:
+        return False
+    try:
+        return not p.exists()
+    except OSError:
+        return False
 
 
 def decode_mozlz4(raw: bytes) -> dict:
@@ -753,7 +866,10 @@ def decode_mozlz4(raw: bytes) -> dict:
             "the `lz4` python package is required "
             "(`pip install lz4`); the tail/lz4cat fallback was removed "
             "because it is known-unreliable") from exc
-    return json.loads(lz4.block.decompress(raw[8:]))
+    doc = json.loads(lz4.block.decompress(raw[8:]))
+    if not isinstance(doc, dict):
+        raise ValueError("session payload decoded but is not a JSON object")
+    return doc
 
 
 def pick_current_entry(tab: dict) -> dict | None:
@@ -776,20 +892,32 @@ def pick_current_entry(tab: dict) -> dict | None:
 
 
 def session_freshness(session_path: Path) -> dict:
-    """Report staleness signals: mtime + whether a backup is newer."""
+    """Report staleness signals: mtime + whether a backup snapshot is newer.
+
+    Only `*.jsonlz4` files under sessionstore-backups/ count (lockfiles
+    and temp artifacts are ignored). Reports the newest snapshot's name
+    so callers can say WHICH file looks fresher, not just that one is.
+    """
     p = Path(session_path)
     try:
         mtime = p.stat().st_mtime
     except OSError:
         return {"exists": False}
-    info: dict = {"exists": True, "mtime": mtime, "backup_newer": False}
+    info: dict = {"exists": True, "mtime": mtime, "backup_newer": False,
+                  "newest_backup": None}
     backups = p.parent / "sessionstore-backups"
     newest = 0.0
+    newest_name = None
     if backups.is_dir():
         for f in backups.iterdir():
+            if not f.name.endswith(".jsonlz4"):
+                continue
             try:
-                newest = max(newest, f.stat().st_mtime)
+                ts = f.stat().st_mtime
             except OSError:
                 continue
+            if ts > newest:
+                newest, newest_name = ts, f.name
     info["backup_newer"] = newest > mtime
+    info["newest_backup"] = newest_name if info["backup_newer"] else None
     return info

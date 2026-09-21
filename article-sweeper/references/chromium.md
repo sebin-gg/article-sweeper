@@ -69,9 +69,10 @@ python3 scripts/cdp_close.py ids.txt --host 127.0.0.1 --port <port> \
 ```
 
 The script skips ids that vanished or navigated since approval (canonical
-URL compared via `sweep_lib.verify_close_candidates()`), refuses ids not
-present in `--expect` (stale/forged lists; `--expect` is required, there
-is no blind close-by-id path), checks `/json/version` endpoint identity
+ URL compared via `sweep_lib.verify_close_candidates()`), refuses ids not
+ present in `--expect` (stale/forged lists; `--expect` and `--browser`
+ are both required — no blind close-by-id path, no unattested endpoint),
+ checks `/json/version` endpoint identity
 via `sweep_lib.check_endpoint_identity()` before touching any tab, and
 re-fetches `/json/list`
 after each close instead of trusting a bare HTTP 200 — unverifiable
