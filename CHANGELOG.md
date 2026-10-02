@@ -3,6 +3,17 @@
 All notable changes to this skill follow Keep a Changelog. Versions use
 semver and match `metadata.version` in SKILL.md frontmatter.
 
+## [1.4.0] - 2026-10-02
+
+Added:
+
+- macOS process-ownership proof: `find_pids_listening_on` falls back to
+  `lsof -iTCP:<port> -sTCP:LISTEN -Fp` and `read_process_cmdline` to
+  `ps -o args=` when the real `/proc/net` tables are absent (macOS).
+  Injected `proc_root` fixtures keep the Linux path; both helpers fail
+  closed on query failure. Added to CI as a `test-macos`
+  (macos-latest) job running the same hash-locked behavioral suite.
+
 ## [1.3.10] - 2026-09-21
 
 Fixed:
