@@ -32,6 +32,8 @@ from sweep_lib import (  # noqa: E402
     browser_matches_product,
     check_endpoint_identity,
     find_pids_listening_on,
+    _darwin_listening_pids,
+    _darwin_process_cmdline,
     iter_candidate_ports,
     read_process_cmdline,
     verify_endpoint_process,
@@ -477,6 +479,54 @@ def test_find_pids_sees_real_ipv6_listener():
         assert os.getpid() in pids
     finally:
         s.close()
+
+
+# --- macOS (lsof/ps) process lookup -----------------------------------------
+
+def test_darwin_listening_pids_parses_lsof_field_output():
+    from types import SimpleNamespace
+
+    def run(argv):
+        assert argv[:3] == ["lsof", "-nP", "-iTCP:9222"]
+        assert argv[3] == "-sTCP:LISTEN" and argv[4] == "-Fp"
+        return SimpleNamespace(stdout="p4242\np1000\np4242\n", returncode=0)
+
+    assert _darwin_listening_pids(9222, run=run) == [1000, 4242]
+
+
+def test_darwin_listening_pids_empty_and_fail_closed():
+    from types import SimpleNamespace
+
+    empty = _darwin_listening_pids(9223, run=lambda argv: SimpleNamespace(
+        stdout="", returncode=0))
+    assert empty == []
+
+    def boom(argv):
+        raise RuntimeError("lsof query failed: gone")
+
+    with pytest.raises(RuntimeError, match="lsof query failed"):
+        _darwin_listening_pids(9222, run=boom)
+    with pytest.raises(ValueError):
+        _darwin_listening_pids(0, run=boom)  # invalid port rejected first
+
+
+def test_darwin_process_cmdline_via_ps_and_fail_closed():
+    from types import SimpleNamespace
+
+    got = _darwin_process_cmdline(7, run=lambda argv: SimpleNamespace(
+        stdout="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=9222\n",
+        returncode=0))
+    assert "--remote-debugging-port=9222" in got
+
+    with pytest.raises(RuntimeError, match="ps gave no cmdline"):
+        _darwin_process_cmdline(7, run=lambda argv: SimpleNamespace(
+            stdout="  \n", returncode=1))
+
+    def boom(argv):
+        raise RuntimeError("ps query failed: gone")
+
+    with pytest.raises(RuntimeError, match="ps query failed"):
+        _darwin_process_cmdline(7, run=boom)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="fake /proc tree needs POSIX symlinks")
