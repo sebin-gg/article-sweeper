@@ -40,6 +40,8 @@ sys.path.insert(0, __file__.rsplit("/", 1)[0])
 from sweep_lib import (  # noqa: E402
     FETCH_THEN_SEARCH,
     SKIP_FETCH_TITLE_ONLY,
+    content_signals,
+    html_to_text,
     is_blocked_status,
     plan_fetch,
 )
@@ -48,6 +50,8 @@ UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 
 MAX_BYTES = 4 * 1024 * 1024
+# Cap the text we keep per page; it is for classification, not archival.
+MAX_TEXT_CHARS = 200_000
 
 # Per-domain ceiling (customer feedback #4). A single global pool of 20 sends 20
 # concurrent hits at any one host, which is exactly how you collect 429s and
@@ -96,7 +100,8 @@ class _DomainGates:
             return fn(url)
 
 
-def fetch_one(url: str, *, timeout: float, allow_search_fallback: bool) -> dict:
+def fetch_one(url: str, *, timeout: float, allow_search_fallback: bool,
+              want_text: bool = False) -> dict:
     """Fetch one URL. Never raises — every failure becomes a typed outcome."""
     plan = plan_fetch(url, allow_search_fallback=allow_search_fallback)
     if plan == SKIP_FETCH_TITLE_ONLY:
@@ -113,7 +118,7 @@ def fetch_one(url: str, *, timeout: float, allow_search_fallback: bool) -> dict:
         })
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = resp.read(MAX_BYTES)
-            return {
+            out = {
                 "url": url,
                 "status": "ok",
                 "http": int(getattr(resp, "status", 200) or 200),
@@ -122,6 +127,17 @@ def fetch_one(url: str, *, timeout: float, allow_search_fallback: bool) -> dict:
                 "needs_search": False,
                 "reason": "",
             }
+            if want_text:
+                # Same request, no extra cost: the body doubles as evidence for
+                # the still-open `unsure` decision.
+                try:
+                    raw = body.decode("utf-8", "replace")
+                    out["text"] = html_to_text(raw)[:MAX_TEXT_CHARS]
+                    out["signals"] = content_signals(out["text"])
+                except Exception:  # noqa: BLE001 - text is best-effort
+                    out["text"] = ""
+                    out["signals"] = {}
+            return out
     except urllib.error.HTTPError as exc:
         blocked = is_blocked_status(exc.code)
         return {
@@ -168,6 +184,9 @@ def main(argv=None) -> int:
                          f"{DEFAULT_PER_DOMAIN}; global concurrency alone gets "
                          f"you rate-limited and banned)")
     ap.add_argument("--timeout", type=float, default=20.0, help="per-request seconds")
+    ap.add_argument("--with-text", action="store_true",
+                    help="also emit extracted text + density signals per URL, so "
+                         "the same request can resolve `unsure` decisions")
     ap.add_argument("--allow-search-fallback", action="store_true",
                     help="paywalled domains: fetch, then route a 403 to search. "
                          "Off by default (feedback #5).")
@@ -186,7 +205,7 @@ def main(argv=None) -> int:
 
     def work(u):
         return gates.run(u, lambda url: fetch_one(
-            url, timeout=args.timeout,
+            url, timeout=args.timeout, want_text=args.with_text,
             allow_search_fallback=args.allow_search_fallback))
 
     # Breadth still comes from the global pool: many hosts proceed at once, while

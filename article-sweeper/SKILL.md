@@ -4,7 +4,7 @@ description: Summarize open article tabs in Thorium, Chromium, Chrome, Brave, Ed
 license: MIT
 allowed-tools: Bash Read Edit Write Task WebFetch WebSearch
 metadata:
-  version: "1.5.2"
+  version: "1.6.0"
   tags: "browser,tabs,summarize,thorium,chromium,firefox"
 ---
 
@@ -55,7 +55,7 @@ scratch costs most of the setup time, so use these:
 | `scripts/list_cdp_tabs.py` | List live tabs from a CDP endpoint as JSON | §2 enumerate Chromium-family tabs |
 | `scripts/cdp_close.py` | Close tabs, revalidating endpoint+browser identity and the last-page guard | §6 close summarized tabs |
 | `scripts/decode_firefox_session.py` | Decode a Firefox session copy (`mozLz4`) into tabs | §2 Firefox fallback (needs `lz4`) |
-| `scripts/fetch_articles.py` | Fetch article bodies concurrently (default 20 at a time) and report per-URL outcome | §4 parallel fetch |
+| `scripts/fetch_articles.py` | Fetch article bodies concurrently (20 wide, 2 per host), returning per-URL outcome plus `--with-text` density signals | §4 parallel fetch + content refinement |
 
 If you find yourself writing `list_cdp_tabs.py`, `cdp_close.py` or a Firefox
 session decoder from scratch, stop — the one you need is above.
@@ -231,6 +231,45 @@ sweeps.
 `fetch_articles.py` as soon as the typed gate emits them — fetches fan out
 20-wide immediately and overlap with whatever you are still doing to finish
 classification. Do not wait for the whole sweep to be classified.
+
+Feed **both** `article` and `unsure` URLs, and pass `--with-text` so the
+extracted text and density signals come back on the same request. The URL gate
+has already excluded webmail, repos and dashboards, so a body you fetch is one
+you intended to read — and that body is free evidence for the decision that is
+still open.
+
+```bash
+python3 - <<'EOF' > "$SCRATCH/urls.txt"
+import json, sys
+sys.path.insert(0, "scripts")
+from sweep_lib import ARTICLE, UNSURE, classify_tabs_typed
+for d in classify_tabs_typed(json.load(open(sys.argv[1]))):
+    if d.decision in (ARTICLE, UNSURE):   # an unsure body can still prove article
+        print(d.url)
+EOF
+
+python3 scripts/fetch_articles.py --concurrency 20 --per-domain 2 --with-text \
+  < "$SCRATCH/urls.txt" > "$SCRATCH/fetched.jsonl"
+```
+
+Before anything closes, refine the still-open decisions with the text you
+already have:
+
+```python
+import json, sys
+sys.path.insert(0, "scripts")
+from sweep_lib import refine_by_content
+
+for row in map(json.loads, open(sys.argv[1])):
+    d = refine_by_content(row["decision_obj"], row.get("text", ""))
+    print(d.decision, d.reason, d.url)
+```
+
+Text density and readability beat guessing from a title, and it costs no extra
+request. Refinement is deliberately one-directional: it may only promote
+`unsure` → `article`, never touches `leave-open`, and never demotes. A web
+inbox is dense with text, so anything able to promote `leave-open` would close
+the busiest dashboard in the sweep instead.
 
 ```bash
 python3 - <<'EOF' > "$SCRATCH/urls.txt"

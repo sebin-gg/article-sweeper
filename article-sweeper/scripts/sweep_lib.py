@@ -634,6 +634,118 @@ def is_blocked_status(status) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Content-based refinement (customer feedback: fetch once, use it for both)
+#
+# The URL gate already excludes webmail, repos and dashboards, so the bodies we
+# fetch are the ones we intended to read. That makes the fetched text free
+# evidence for the decision that is still open: text density and readability
+# beat guessing from a title, and it costs no extra request.
+#
+# Deliberately conservative. It may ONLY promote `unsure` -> `article`, never
+# touch `leave-open`, and never demote. A web inbox has plenty of text; if
+# refinement could promote `leave-open`, the densest dashboard in a sweep would
+# become the tab that closes.
+# ---------------------------------------------------------------------------
+
+_TAG_RE = re.compile(r"<[^>]+>")
+_SCRIPT_RE = re.compile(r"<(script|style|noscript)\b.*?</\1>", re.I | re.S)
+_BLOCK_RE = re.compile(
+    r"</(p|div|section|article|li|h[1-6]|blockquote|tr)>|<br\s*/?>", re.I)
+
+
+def html_to_text(html: str) -> str:
+    """Very small HTML -> text reducer. No dependency, no cleverness.
+
+    Block-level closers become newlines before tags are stripped — otherwise the
+    whole document collapses to one line and the paragraph-based density signals
+    see a single blob.
+    """
+    if not html:
+        return ""
+    text = _SCRIPT_RE.sub(" ", html)
+    text = _BLOCK_RE.sub("\n\n", text)
+    text = _TAG_RE.sub(" ", text)
+    text = (text.replace("&nbsp;", " ").replace("&amp;", "&")
+                .replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"'))
+    text = re.sub(r"[ \t\r\f\v]+", " ", text)
+    text = re.sub(r" *\n *", "\n", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def content_signals(text: str) -> dict:
+    """Cheap density/readability metrics. No model, no tokens."""
+    t = (text or "").strip()
+    words = re.findall(r"\w[\w'’-]*", t)
+    n_words = len(words)
+    paragraphs = [p for p in re.split(r"\n{2,}", t) if len(p.split()) >= 12]
+    # Link density: how much of the text is inside <a>. High density = index or
+    # nav, not an article. Computed on the raw HTML when available.
+    long_words = sum(1 for w in words if len(w) >= 7)
+    sentences = len(re.findall(r"[.!?](?:\s|$)", t))
+    avg_sentence = (n_words / sentences) if sentences else 0.0
+    return {
+        "chars": len(t),
+        "words": n_words,
+        "paragraphs": len(paragraphs),
+        "avg_sentence_words": round(avg_sentence, 1),
+        "long_word_ratio": (long_words / n_words) if n_words else 0.0,
+    }
+
+
+def link_density(html: str) -> float:
+    """Fraction of visible text that sits inside anchors. 0.0-1.0."""
+    if not html:
+        return 1.0
+    total = len(html_to_text(html))
+    if total == 0:
+        return 1.0
+    anchor_text = sum(len(html_to_text(m)) for m in re.findall(r"<a\b[^>]*>(.*?)</a>", html, re.I | re.S))
+    return min(1.0, anchor_text / total)
+
+
+# Thresholds chosen so an article-shaped body passes and an index/nav/shell does
+# not. Deliberately conservative: a false negative only leaves a tab open.
+MIN_WORDS = 220
+MIN_PARAGRAPHS = 3
+MIN_LONG_WORD_RATIO = 0.12
+MAX_LINK_DENSITY = 0.45
+
+
+def looks_like_article(text: str, *, html: str = "") -> tuple[bool, str]:
+    """(is_article_body, reason) from fetched content alone."""
+    s = content_signals(text)
+    if s["words"] < MIN_WORDS:
+        return False, f"thin-content:{s['words']}w"
+    if s["paragraphs"] < MIN_PARAGRAPHS:
+        return False, f"few-paragraphs:{s['paragraphs']}"
+    if s["long_word_ratio"] < MIN_LONG_WORD_RATIO:
+        return False, f"low-word-variety:{round(s['long_word_ratio'], 3)}"
+    if html and link_density(html) > MAX_LINK_DENSITY:
+        return False, f"link-heavy:{round(link_density(html), 2)}"
+    return True, (f"dense-content:{s['words']}w/{s['paragraphs']}p")
+
+
+def refine_by_content(decision: TabDecision, text: str, *,
+                      html: str = "") -> TabDecision:
+    """Promote `unsure` -> `article` on strong content evidence. Nothing else.
+
+    - `unsure` + article-shaped body  -> `article`  (now closable)
+    - `unsure` + weak body            -> unchanged, stays `unsure`
+    - `article` / `leave-open` / `duplicate-of` -> never modified
+    """
+    if decision.decision != UNSURE:
+        return decision
+    ok, reason = looks_like_article(text, html=html)
+    if not ok:
+        return decision
+    return TabDecision(
+        url=decision.url, decision=ARTICLE, reason=f"content:{reason}",
+        canonical=decision.canonical, duplicate_of=decision.duplicate_of,
+        title=decision.title, tab_ids=decision.tab_ids,
+    )
+
+
+# ---------------------------------------------------------------------------
 # CDP parsing / validation
 # ---------------------------------------------------------------------------
 

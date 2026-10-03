@@ -22,6 +22,47 @@ Tests:
   message alongside otherwise-parseable output. Verified it fails against the
   previous behaviour.
 
+## [1.6.0] - 2026-10-03
+
+Fetch once, use the body for both classification and summarization.
+
+Added:
+
+- **Content refinement** (`sweep_lib.refine_by_content`, `looks_like_article`,
+  `content_signals`, `link_density`, `html_to_text`). The URL gate already
+  excludes webmail, repos and dashboards, so a fetched body is one that was
+  intended to be read — which makes it free evidence for the decision still
+  open. Density and readability beat guessing from a title, at no extra request.
+  Thresholds: 220 words, 3 paragraphs, long-word ratio >= 0.12, link density
+  <= 0.45.
+- `fetch_articles.py --with-text` returns the extracted text and its density
+  signals on the same request. The sweep now feeds **both** `article` and
+  `unsure` URLs to the fetcher, then refines before anything closes.
+
+Safety:
+
+- Refinement is **one-directional**. It may only promote `unsure` -> `article`.
+  It never touches `leave-open` and never demotes. A web inbox is dense with
+  text, so any rule that could promote `leave-open` would close the busiest
+  dashboard in a sweep instead of the article. Verified: a `leave-open`
+  webmail URL stays `leave-open` when handed article-shaped prose.
+- This also removes the silent-failure mode behind `unsure`: before, a weak
+  signal meant the article simply never got swept and nothing said so. Now the
+  body it already paid for can resolve it, and only genuinely ambiguous pages
+  reach a model or stay open.
+
+Fixed:
+
+- `html_to_text` collapsed the whole document to a single line because the
+  block-level regex was defined but never applied, which silently killed every
+  paragraph-based density signal. Block closers now become newlines before tags
+  are stripped.
+
+Tests:
+
+- 21 new tests. Reverting the paragraph fix fails 3 of them, and removing the
+  per-direction guard breaks the webmail case, so the suite is not vacuous.
+
 ## [1.5.2] - 2026-10-03
 
 Closes two gaps in the 1.5.1 dev-mode hardening.

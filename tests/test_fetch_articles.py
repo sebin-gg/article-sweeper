@@ -230,3 +230,76 @@ def test_cli_accepts_per_domain_flag(tmp_path):
         [PY, str(SCRIPT), "--concurrency", "4", "--per-domain", "1"],
         stdin=inp.open(), capture_output=True, text=True, timeout=90)
     assert proc.returncode == 0, proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# --with-text: one request serves both classification and summarization
+# ---------------------------------------------------------------------------
+
+def test_with_text_emits_text_and_signals_from_the_same_request(monkeypatch):
+    body = (b"<html><body><article>" + b"".join(
+        b"<p>The committee reviewed the quarterly infrastructure budget and found "
+        b"that deployment frequency increased substantially while mean time to "
+        b"recovery improved across every regional data centre. </p>"
+        for _ in range(8)) + b"</article></body></html>")
+    calls = []
+
+    def counting(*a, **k):
+        calls.append(1)
+        return _Resp(body)
+
+    monkeypatch.setattr(fetch_articles.urllib.request, "urlopen", counting)
+    out = fetch_articles.fetch_one("https://ex.com/blog/p", timeout=5,
+                                   allow_search_fallback=False, want_text=True)
+    assert out["status"] == "ok"
+    assert out["signals"]["words"] > 0
+    assert len(out["text"]) > 0
+    # The whole point: no second request.
+    assert len(calls) == 1
+
+
+def test_without_text_no_body_is_returned(monkeypatch):
+    monkeypatch.setattr(fetch_articles.urllib.request, "urlopen",
+                        lambda *a, **k: _Resp(b"<html>x</html>"))
+    out = fetch_articles.fetch_one("https://ex.com/blog/p", timeout=5,
+                                   allow_search_fallback=False)
+    assert "text" not in out and "signals" not in out
+
+
+def test_text_extraction_failure_degrades_gracefully(monkeypatch):
+    class _Bad:
+        headers = {"Content-Type": "text/html"}
+        status = 200
+        def read(self, n=-1): return b"\xff\xfe binary-ish"
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(fetch_articles.urllib.request, "urlopen",
+                        lambda *a, **k: _Bad())
+    out = fetch_articles.fetch_one("https://ex.com/blog/p", timeout=5,
+                                   allow_search_fallback=False, want_text=True)
+    assert out["status"] == "ok"
+    assert isinstance(out.get("text", ""), str)
+
+
+def test_paywalled_skips_the_fetch_even_with_text_requested(monkeypatch):
+    def explode(*a, **k):
+        raise AssertionError("paywalled must not be fetched")
+
+    monkeypatch.setattr(fetch_articles.urllib.request, "urlopen", explode)
+    out = fetch_articles.fetch_one("https://medium.com/x", timeout=5,
+                                   allow_search_fallback=False, want_text=True)
+    assert out["status"] == "skipped-paywalled"
+    assert "text" not in out
+
+
+def test_cli_with_text_flag_emits_signals(tmp_path):
+    inp = tmp_path / "in.jsonl"
+    inp.write_text("https://example.com/\n")
+    proc = subprocess.run(
+        [PY, str(SCRIPT), "--with-text", "--concurrency", "2", "--timeout", "10"],
+        stdin=inp.open(), capture_output=True, text=True, timeout=90)
+    assert proc.returncode == 0, proc.stderr
+    row = json.loads(proc.stdout.splitlines()[0])
+    assert row["status"] == "ok"
+    assert "signals" in row and "text" in row

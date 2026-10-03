@@ -52,6 +52,11 @@ from sweep_lib import (  # noqa: E402
     UNSURE,
     STRONG_ARTICLE_REASONS,
     TabDecision,
+    content_signals,
+    html_to_text,
+    link_density,
+    looks_like_article,
+    refine_by_content,
     classify_tabs_typed,
     is_blocked_status,
     is_paywalled,
@@ -1699,3 +1704,112 @@ def test_dev_mode_requires_verifying_the_backup_before_restarting():
     assert "Verify the backup" in text
     assert "non-empty" in text
     assert "do not restart" in text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Content refinement (fetch once, use the body for classify + summarize)
+#
+# The URL gate already excludes webmail, repos and dashboards, so a body we
+# fetched is one we intended to read. That makes the text free evidence for the
+# decision still open. Conservative by construction: only `unsure` may move.
+# ---------------------------------------------------------------------------
+
+ARTICLE_HTML = "<html><body><article>" + "".join(
+    f"<p>The committee reviewed the quarterly infrastructure budget and found that "
+    f"deployment frequency increased substantially while mean time to recovery "
+    f"improved correspondingly across every regional data centre. Engineers "
+    f"documented the migration path in detail, including rollback procedures, and "
+    f"recorded the reasoning behind each irreversible configuration change. </p>"
+    for _ in range(8)) + "</article></body></html>"
+
+NAV_HTML = "<html><body>" + "".join(
+    f'<p><a href="/x{i}">Link number {i} about various things</a></p>'
+    for i in range(60)) + "</body></html>"
+
+
+def _unsure(url="https://newsletter.io/lp/q3", title="Q3"):
+    d = classify_tabs_typed([{"id": "1", "url": url, "title": title}])[0]
+    assert d.decision == UNSURE
+    return d
+
+
+def test_html_to_text_keeps_paragraph_boundaries():
+    # Regression: block closers must become newlines, otherwise the whole
+    # document collapses to one line and paragraph signals see a single blob.
+    text = html_to_text(ARTICLE_HTML)
+    assert content_signals(text)["paragraphs"] >= 6
+
+
+def test_html_to_text_drops_script_and_style():
+    html = "<html><style>body{color:red}</style><script>var x=1;</script><p>Body.</p></html>"
+    text = html_to_text(html)
+    assert "var x" not in text and "color:red" not in text
+    assert "Body." in text
+
+
+def test_content_signals_on_empty_input():
+    s = content_signals("")
+    assert s["words"] == 0 and s["paragraphs"] == 0
+    assert s["long_word_ratio"] == 0.0
+
+
+def test_article_body_is_recognised_and_nav_is_not():
+    assert looks_like_article(html_to_text(ARTICLE_HTML), html=ARTICLE_HTML)[0] is True
+    ok, why = looks_like_article(html_to_text(NAV_HTML), html=NAV_HTML)
+    assert ok is False
+    assert why.startswith(("thin-content", "few-paragraphs", "low-word-variety", "link-heavy"))
+
+
+def test_refinement_promotes_unsure_to_article_and_makes_it_closable():
+    d = _unsure()
+    r = refine_by_content(d, html_to_text(ARTICLE_HTML), html=ARTICLE_HTML)
+    assert r.decision == ARTICLE
+    assert r.is_closable is True
+    assert r.reason.startswith("content:")
+
+
+@pytest.mark.parametrize("body", ["", "Too short.", NAV_HTML, "<html><body></body></html>"])
+def test_weak_content_leaves_unsure_untouched(body):
+    d = _unsure()
+    r = refine_by_content(d, html_to_text(body), html=body)
+    assert r.decision == UNSURE
+    assert r.is_closable is False
+
+
+def test_refinement_never_promotes_leave_open_even_with_article_text():
+    # A web inbox has plenty of dense text. If refinement could promote
+    # leave-open, the densest dashboard in a sweep would become the closed tab.
+    d = classify_tabs_typed([{"id": "2", "url": "https://mail.proton.me/u/0/inbox",
+                              "title": "Inbox"}])[0]
+    assert d.decision == LEAVE_OPEN
+    r = refine_by_content(d, html_to_text(ARTICLE_HTML), html=ARTICLE_HTML)
+    assert r.decision == LEAVE_OPEN
+    assert r.is_closable is False
+
+
+def test_refinement_never_demotes_an_article_or_touches_duplicates():
+    art = classify_tabs_typed([{"id": "1", "url": "https://ex.com/blog/p",
+                                "title": "P"}])[0]
+    assert refine_by_content(art, "nothing", html="").decision == ARTICLE
+    dup = classify_tabs_typed([
+        {"id": "1", "url": "https://ex.com/blog/p", "title": "P"},
+        {"id": "2", "url": "https://ex.com/blog/p?utm_source=x", "title": "P"},
+    ])[1]
+    assert dup.decision == DUPLICATE_OF
+    assert refine_by_content(dup, "", html="").decision == DUPLICATE_OF
+
+
+def test_refinement_preserves_identity_and_tab_ids():
+    d = classify_tabs_typed([{"id": "abc", "url": "https://newsletter.io/lp/q3",
+                              "title": "Q3"}])[0]
+    r = refine_by_content(d, html_to_text(ARTICLE_HTML), html=ARTICLE_HTML)
+    assert r.tab_ids == ("abc",)
+    assert r.canonical == d.canonical
+    assert r.url == d.url
+    assert r.title == d.title
+
+
+def test_link_density_separates_article_from_index():
+    assert link_density(ARTICLE_HTML) < 0.2
+    assert link_density(NAV_HTML) > 0.7
+    assert link_density("") == 1.0
