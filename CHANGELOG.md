@@ -22,6 +22,37 @@ Tests:
   message alongside otherwise-parseable output. Verified it fails against the
   previous behaviour.
 
+## [1.8.0] - 2026-10-03
+
+Close tabs only if they are still the tabs you approved.
+
+Fixed:
+
+- **The enumerate/close race was only half-closed.** `verify_close_candidates()`
+  re-listed once for the whole batch, then every close ran in a 20-wide pool.
+  That check therefore covered a single instant: on a 50-tab sweep the last
+  close fires many seconds after the snapshot it was approved against, and a
+  tab that navigated in between was closed on a stale decision.
+- `close_one()` now re-lists and re-compares the canonical URL immediately
+  before issuing the `PUT /json/close/<id>`, per tab, carrying the URL it was
+  approved for. Three outcomes skip the close: target gone, canonical URL
+  changed, or list unreachable. Unverifiable means "do not close", never
+  "close and hope".
+- Skips are reported and exit non-zero, so a partially-applied close set is
+  visible rather than silently short. Cost is one local `/json/list` read per
+  close, which is what buys "approved now" instead of "approved a moment ago".
+
+Tests:
+
+- 4 new tests, 185 pass. Two of the first drafts passed under the *pre-fix*
+  code, because they were satisfied by the old batch check rather than the
+  new per-close one -- passing for the wrong reason. Both now fire after the
+  batch approval (list failure and tab removal begin on the second list read),
+  and under the pre-fix behaviour all three skip-path tests fail.
+- The navigated-tab race is driven through a real fake CDP server that
+  rewrites tab A's URL on the second `/json/list` read, so the navigation
+  genuinely lands in the window between batch approval and close.
+
 ## [1.7.0] - 2026-10-03
 
 Resilience under rate limits, and a streaming summary writer.

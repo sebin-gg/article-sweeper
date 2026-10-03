@@ -4,7 +4,7 @@ description: Summarize open article tabs in Thorium, Chromium, Chrome, Brave, Ed
 license: MIT
 allowed-tools: Bash Read Edit Write Task WebFetch WebSearch
 metadata:
-  version: "1.7.0"
+  version: "1.8.0"
   tags: "browser,tabs,summarize,thorium,chromium,firefox"
 ---
 
@@ -507,7 +507,19 @@ The script refuses ids missing from `--expect`, skips ids that vanished
 or navigated since approval (canonical-URL comparison), requires the
 endpoint to answer `/json/version` with the `--browser` product match,
 and confirms each target disappeared afterwards — unverifiable closes
-(list unreachable) count as FAILED with non-zero exit. A close set that
+(list unreachable) count as FAILED with non-zero exit.
+
+**Identity is re-checked again at close time, per tab.** The batch check
+above only covers the instant it ran: with a 20-wide pool on a 50-tab
+sweep, the last close fires many seconds later, and a tab that navigated
+in between would be closed on a stale decision. So `close_one()` re-lists
+and re-compares the canonical URL immediately before issuing the `PUT` —
+the last moment the check can still prevent anything. Three outcomes skip
+the close: the target is gone, its canonical URL changed, or the list is
+unreachable. A skip is reported and exits non-zero, so a partial close set
+is visible rather than silent. Re-listing per tab costs one local request
+per close and buys the difference between "approved a moment ago" and
+"approved now". A close set that
 would leave the browser with zero page tabs is refused by default
 (verified live: Thorium exits the whole browser); open or leave another
 tab first, or pass `--allow-last-tab` to accept the shutdown

@@ -59,7 +59,35 @@ def fetch_list(host, port, timeout=5):
         return json.loads(resp.read().decode("utf-8", "replace"))
 
 
-def close_one(host, port, tab_id, timeout=5):
+def close_one(host, port, tab_id, timeout=5, *, expect_canonical=None,
+              expect_url="", endpoint="", browser=""):
+    """Close one tab, re-validating its identity immediately beforehand.
+
+    The up-front `verify_close_candidates()` pass only covers the instant it
+    ran. Every tab closed after that -- and with a 20-wide pool on a 50-tab
+    sweep the last one fires many seconds later -- is closing a stale
+    decision. So the id/URL pair is re-checked here, in the last possible
+    moment, and only then is the PUT issued.
+
+    `expect_canonical=None` keeps the legacy behaviour for callers that have
+    no expectation to check.
+    """
+    if expect_canonical is not None:
+        try:
+            live = parse_cdp_list(fetch_list(host, port, timeout),
+                                  endpoint=endpoint, browser=browser)
+        except Exception as exc:  # noqa: BLE001 - unverifiable must not close
+            return tab_id, False, (f"SKIP: cannot revalidate before close: "
+                                   f"{type(exc).__name__}")[:120]
+        now = {t.id: t for t in live}
+        rec = now.get(tab_id)
+        if rec is None:
+            return tab_id, False, "SKIP: target gone before close"
+        if rec.canonical != expect_canonical:
+            return tab_id, False, (
+                f"SKIP: navigated before close ({redact_url(expect_url)} -> "
+                f"{redact_url(rec.url)})")[:120]
+
     url = cdp_url(host, port,  # NOSONAR python:S5332
                   f"/json/close/{urllib.parse.quote(tab_id, safe='')}")
     try:
@@ -227,9 +255,18 @@ def main(argv=None):
 
     ok = 0
     closed_ids: list[str] = []
+    # Each close carries the canonical URL it was approved for, so the check
+    # happens per-tab at close time rather than once for the whole batch.
+    safe_by_id = {t.id: t for t in safe}
+
+    def _close(i):
+        rec = safe_by_id[i]
+        return close_one(host, port, i, expect_canonical=rec.canonical,
+                         expect_url=rec.url, endpoint=endpoint,
+                         browser=args.browser)
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=20) as pool:
-        for tab_id, done, msg in pool.map(
-                lambda i: close_one(host, port, i), ids):
+        for tab_id, done, msg in pool.map(_close, ids):
             print(f"{'CLOSED' if done else 'FAILED'} {tab_id} {msg[:80]}")
             ok += done
             if done:

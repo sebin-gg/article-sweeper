@@ -1024,7 +1024,9 @@ class FakeCDP:
 
     def __init__(self, product, tabs, *, keep_on_close=False,
                  fail_list_after_close=False, also_drop=(),
-                 close_delay_lists=0, stop_after_close=False):
+                 close_delay_lists=0, stop_after_close=False,
+                 navigate_after_lists=0, navigate_to=None,
+                 fail_list_after_reads=0, drop_after_lists=0):
         import threading
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
         self.product = product
@@ -1042,6 +1044,17 @@ class FakeCDP:
         # Thorium) - the whole endpoint disappears, not just the tab
         self.stop_after_close = stop_after_close
         self.stop = False
+        # Simulate a tab navigating mid-run: after `navigate_after_lists`
+        # /json/list reads, rewrite tab "A"'s URL. Models the user clicking
+        # through after the up-front revalidation but before its close.
+        self.navigate_after_lists = navigate_after_lists
+        self.navigate_to = navigate_to
+        self.list_reads = 0
+        # Same idea for the two failure modes that must be caught at close
+        # time: /json/list starts failing, or the tab vanishes, only after the
+        # batch revalidation has already approved it.
+        self.fail_list_after_reads = fail_list_after_reads
+        self.drop_after_lists = drop_after_lists
         state = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -1070,9 +1083,20 @@ class FakeCDP:
                         {"Browser": state.product,
                          "Protocol-Version": "1.3"}))
                 elif self.path == "/json/list":
+                    state.list_reads += 1
+                    if (state.fail_list_after_reads
+                            and state.list_reads >= state.fail_list_after_reads):
+                        state.fail_list = True
                     if state.fail_list:
                         self._send(500, "list down", "text/plain")
                     else:
+                        if (state.navigate_after_lists
+                                and state.list_reads >= state.navigate_after_lists
+                                and "A" in state.tabs and state.navigate_to):
+                            state.tabs["A"]["url"] = state.navigate_to
+                        if (state.drop_after_lists
+                                and state.list_reads >= state.drop_after_lists):
+                            state.tabs.pop("A", None)
                         done = [tid for tid, n in
                                 state.pending_removals.items() if n <= 1]
                         for tid in done:
@@ -1934,3 +1958,109 @@ def test_stream_header_declares_intent_before_any_entry(tmp_path):
     p = tmp_path / "summary.md"
     SummaryStream(p, expected=40)
     assert "40 article tabs summarised." in p.read_text(encoding="utf-8")
+
+
+# --- close-time identity revalidation (enumerate/close race) ---------------
+
+def _race_fixture(tmp_path, navigate_after=2):
+    """A that navigates only AFTER the up-front revalidation has approved it.
+
+    Read #1 of /json/list is the batch revalidation; the read inside
+    close_one() is #2. Firing at #2 puts the navigation squarely in the
+    window the batch check cannot see.
+    """
+    return {
+        "A": {"id": "A", "type": "page", "url": "https://ex.com/a", "title": "A"},
+        "B": {"id": "B", "type": "page", "url": "https://ex.com/b", "title": "B"},
+        "navigate_after_lists": navigate_after,
+        "navigate_to": "https://ex.com/a-CLICKED-THROUGH",
+    }
+
+
+def test_close_revalidates_each_tab_at_close_time(tmp_path):
+    """The race this closes: navigate after the batch check, before the close.
+
+    `verify_close_candidates()` runs once for the whole batch. Tab A navigates
+    only after that pass has completed, so the batch check has already
+    approved it -- and without a per-close re-check, A would be closed on a
+    stale decision.
+    """
+    f = _race_fixture(tmp_path)
+    tabs = {"A": f["A"], "B": f["B"]}
+    with FakeCDP("Chrome/140.0.0.0", tabs,
+                 navigate_after_lists=f["navigate_after_lists"],
+                 navigate_to=f["navigate_to"]) as cdp:
+        exp = tmp_path / "expect.json"
+        cdp.dump_list(exp)
+        ids = tmp_path / "ids.txt"
+        ids.write_text("A\n", encoding="utf-8")
+        r = run("cdp_close.py", str(ids), "--host", "127.0.0.1",
+                "--port", str(cdp.port), "--expect", str(exp),
+                "--browser", "chrome")
+        # A skip must be loud: the non-zero exit is how the agent notices
+        # that not everything it asked for was closed.
+        assert r.returncode != 0, r.stderr + r.stdout
+        # Tab A survived: it was still open at close time, so nothing was lost.
+        assert "A" in cdp.tabs, "navigated tab must not be closed"
+        assert cdp.closed_puts == [], "no PUT may be issued for a navigated tab"
+        assert "navigated before close" in (r.stdout + r.stderr)
+
+
+def test_close_revalidation_does_not_block_untouched_tabs(tmp_path):
+    """The per-close check must not turn into 'refuse everything'."""
+    f = _race_fixture(tmp_path, navigate_after=99)  # never fires
+    tabs = {"A": f["A"], "B": f["B"]}
+    with FakeCDP("Chrome/140.0.0.0", tabs,
+                 navigate_after_lists=f["navigate_after_lists"],
+                 navigate_to=f["navigate_to"]) as cdp:
+        exp = tmp_path / "expect.json"
+        cdp.dump_list(exp)
+        ids = tmp_path / "ids.txt"
+        ids.write_text("B\n", encoding="utf-8")
+        r = run("cdp_close.py", str(ids), "--host", "127.0.0.1",
+                "--port", str(cdp.port), "--expect", str(exp),
+                "--browser", "chrome")
+        assert r.returncode == 0, r.stderr + r.stdout
+        assert "B" not in cdp.tabs, "un-navigated tab must still close"
+        assert cdp.closed_puts == ["B"]
+
+
+def test_close_refuses_when_it_cannot_revalidate(tmp_path):
+    """Unverifiable must mean 'do not close', never 'close and hope'.
+
+    /json/list breaks only *after* the batch revalidation succeeded, so the
+    tab is already approved when revalidation becomes impossible.
+    """
+    tabs = {"A": {"id": "A", "type": "page",
+                  "url": "https://ex.com/a", "title": "A"},
+            "B": {"id": "B", "type": "page",
+                  "url": "https://ex.com/b", "title": "B"}}
+    with FakeCDP("Chrome/140.0.0.0", tabs,
+                 fail_list_after_reads=2) as cdp:
+        exp = tmp_path / "expect.json"
+        cdp.dump_list(exp)
+        ids = tmp_path / "ids.txt"
+        ids.write_text("A\n", encoding="utf-8")
+        r = run("cdp_close.py", str(ids), "--host", "127.0.0.1",
+                "--port", str(cdp.port), "--expect", str(exp),
+                "--browser", "chrome")
+        assert "A" in cdp.tabs and cdp.closed_puts == []
+        assert "cannot revalidate" in (r.stdout + r.stderr)
+
+
+def test_close_reports_gone_target_without_closing(tmp_path):
+    """A tab that vanishes after approval must not produce a blind PUT."""
+    tabs = {"A": {"id": "A", "type": "page",
+                  "url": "https://ex.com/a", "title": "A"},
+            "B": {"id": "B", "type": "page",
+                  "url": "https://ex.com/b", "title": "B"}}
+    with FakeCDP("Chrome/140.0.0.0", tabs, drop_after_lists=2) as cdp:
+        exp = tmp_path / "expect.json"
+        cdp.dump_list(exp)
+        ids = tmp_path / "ids.txt"
+        ids.write_text("A\n", encoding="utf-8")
+        r = run("cdp_close.py", str(ids), "--host", "127.0.0.1",
+                "--port", str(cdp.port), "--expect", str(exp),
+                "--browser", "chrome")
+        assert cdp.closed_puts == [], "no PUT for a target that is already gone"
+        assert "gone before close" in (r.stdout + r.stderr)
