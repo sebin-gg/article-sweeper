@@ -278,12 +278,24 @@ python3 scripts/fetch_articles.py --concurrency 20 --per-domain 2 --with-text \
   --max-attempts 3 < "$SCRATCH/urls.txt" > "$SCRATCH/fetched.jsonl"
 ```
 
+`--per-domain 2` caps each host independently: breadth still comes from the
+global 20-worker pool, so 4 TechGig tabs do not stop 11 other hosts from running.
+The cost is real but bounded — those 4 serialize into two pairs.
+
 `--max-attempts 3` retries what is worth retrying — `429`, `5xx` and transport
 errors — with exponential backoff and jitter, and honours `Retry-After`. Jitter
 is the load-bearing part: without it, five Medium tabs retry in lockstep and
 re-create the stampede that earned the 429. A `403` is a refusal, not a
 glitch, and is never retried. Every result reports `attempts`, so a summary can
 say "rate limited" instead of "fetch failed".
+
+**A backoff parks inside the host's slot.** The retry sleep happens while the
+per-domain semaphore is still held, so a `429` slows down *every* URL on that
+host, not just the one that hit it. That is intentional: a `429` is the host
+asking for slower traffic, so the penalty should land on the host that caused
+it rather than on the rest of the sweep. Other hosts are unaffected and keep
+running. This is also why the serialization is worth its cost — it converts one
+host's throttle into a local slowdown instead of a sweep-wide one.
 
 Do not batch the summaries. Write them as they finish:
 

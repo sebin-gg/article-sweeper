@@ -56,14 +56,31 @@ Streaming summary writer (`sweep_lib.SummaryStream`):
   `partial` means entries are missing: re-run those URLs rather than close tabs
   against a short summary.
 
+Pinned the interaction between the per-domain cap and retry backoff, which had
+been an accident of nesting rather than a guarantee. `fetch_one()` sleeps
+inside the per-domain gate, so a URL parked in backoff keeps its host's
+semaphore held: a `429` therefore slows every URL on that host, not just the
+one that hit it. That is the intended reading -- a `429` is the host asking for
+slower traffic, so the penalty belongs to the host that caused it rather than
+to the rest of the sweep, and other hosts keep running untouched. It is also
+what makes the cap's serialization worth its cost: one host's throttle becomes
+a local slowdown instead of a sweep-wide one.
+
+The first version of those tests was vacuous. They patched `time.sleep` to a
+no-op, which erased the very window they claimed to observe, so a mutation
+letting the backoff escape the gate still passed. Rewritten to use a real
+blocking sleep, after which that mutation fails both tests. A concurrency test
+that mocks out the delay it depends on is not a concurrency test.
+
 Tests:
 
-- 22 new tests, 179 pass. Mutation-tested rather than trusted: removing the
+- 24 new tests, 181 pass. Mutation-tested rather than trusted: removing the
   retry classification fails 4, removing jitter fails 1, dropping the running
-  recount fails 1, and stale header intent fails 1.
+  recount fails 1, stale header intent fails 1, letting backoff escape the host
+  gate fails 2.
 - The stale-header case is worth noting: mutation testing found a gap where
   *nothing* pinned the initial header, so a crash before the first emit would
-  have looked like an empty sweep instead of a lost one. That test exists now.
+  have looked like an empty sweep rather than a lost one. That test exists now.
 
 ## [1.6.0] - 2026-10-03
 

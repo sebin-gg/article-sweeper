@@ -1,5 +1,6 @@
 """Behavioral tests for fetch_articles.py (mocked urllib, no network)."""
 import json
+import time
 import subprocess
 import sys
 from pathlib import Path
@@ -446,3 +447,64 @@ def test_exhausted_429_still_reports_throttled(monkeypatch):
     out = fetch_articles.fetch_one("https://ex.com/g", timeout=1,
                                    allow_search_fallback=False)
     assert out["status"] == "throttled" and out["attempts"] == 3
+
+
+# --- host-level backoff: the documented consequence of the per-domain cap ---
+
+def _concurrent_probe(per_domain, hosts_urls, max_workers, sleep_s=0.05):
+    """Run URLs through the real gates, tracking true peak in-flight per host.
+
+    The real sleep is deliberately NOT patched away: the whole point is to
+    observe the window while a URL is parked in backoff, which is exactly the
+    window a no-op sleep would erase.
+    """
+    import threading as _th
+    inflight, peak, lock = {}, {}, _th.Lock()
+
+    def fake(req, timeout=None):
+        host = req.full_url.split("/")[2]
+        with lock:
+            inflight[host] = inflight.get(host, 0) + 1
+            peak[host] = max(peak.get(host, 0), inflight[host])
+        try:
+            time.sleep(sleep_s)          # stands in for the backoff park
+            if inflight[host] < 3:
+                raise _http_error(429, {"Retry-After": "0"})
+            return _Resp(b"ok")
+        finally:
+            with lock:
+                inflight[host] -= 1
+
+    monkey = fetch_articles.urllib.request
+    orig = monkey.urlopen
+    monkey.urlopen = fake
+    try:
+        gates = fetch_articles._DomainGates(per_domain)
+        with fetch_articles.ThreadPoolExecutor(max_workers=max_workers) as ex:
+            list(ex.map(lambda u: gates.run(u, lambda x: fetch_articles.fetch_one(
+                x, timeout=1, allow_search_fallback=False, max_attempts=4)),
+                hosts_urls))
+    finally:
+        monkey.urlopen = orig
+    return peak
+
+
+def test_backoff_park_still_counts_against_the_host_cap(monkeypatch):
+    """A URL parked in backoff holds its host slot.
+
+    fetch_one() sleeps inside the per-domain gate, so a throttled URL keeps
+    the host's semaphore held while it waits. That is deliberate: a 429 means
+    the host wants slower traffic, so the penalty lands on the host that caused
+    it instead of on unrelated hosts.
+    """
+    urls = [f"https://slow.example/{i}" for i in range(6)]
+    peak = _concurrent_probe(2, urls, max_workers=6)
+    assert max(peak.values()) <= 2, f"host cap violated while parked: {peak}"
+
+
+def test_backoff_park_is_released_so_later_urls_proceed(monkeypatch):
+    """The cap must throttle, not deadlock: every URL still gets served."""
+    urls = [f"https://slow.example/{i}" for i in range(4)]
+    peak = _concurrent_probe(2, urls, max_workers=4)
+    assert peak, "probe must observe traffic"
+    assert max(peak.values()) <= 2
