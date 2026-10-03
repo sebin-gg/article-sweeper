@@ -87,3 +87,57 @@ jobs:
             echo "- Result: ${{ job.status }}"
             echo "- Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # Cross-platform / cross-version parity. ADDITIVE on purpose: `main` is
+  # branch-protected with required status checks pinned to the literal job
+  # names "lint" and "test". Matrixing `test` directly would rename its check
+  # contexts to "test (3.11)" etc., the pinned context would never report, and
+  # the PR could never merge. So `test` above is untouched and the extra
+  # coverage lives in its own jobs.
+  #
+  # Python versions are fanned out on ubuntu only: Linux minutes are the only
+  # ones free for private repos too, so this stays free even if visibility
+  # flips. The macOS and Windows legs stay single-version smoke tests.
+  # ---------------------------------------------------------------------------
+  test-python-versions:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install test deps (hash-locked)
+        run: "pip install --only-binary=:all: --require-hashes -r requirements-ci.txt"
+      - name: Behavioral tests
+        run: python -m pytest tests/ -q
+
+  test-windows:
+    name: Test (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - name: Install test deps (hash-locked)
+        run: "pip install --only-binary=:all: --require-hashes -r requirements-ci.txt"
+      # The sweep drives Chromium/Firefox over the DevTools Protocol; a Windows
+      # leg is what proves no POSIX-only path assumptions leaked into the client.
+      - name: Behavioral tests on Windows
+        run: python -m pytest tests/ -q
+      - name: Windows validation report
+        if: always()
+        run: |
+          {
+            echo "## Windows validation"
+            echo "- Runner: $env:OS"
+            echo "- Python: $(python --version)"
+            echo "- Result: ${{ job.status }}"
+            echo "- Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          } >> $env:GITHUB_STEP_SUMMARY
