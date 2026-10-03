@@ -5,8 +5,22 @@ semver and match `metadata.version` in SKILL.md frontmatter.
 
 ## [Unreleased]
 
-- Repository-wide review pass: no behavioural change in this entry; it exists
-  to carry the CodeRabbit full-review findings for this skill.
+Fixed:
+
+- macOS process-ownership proof fails closed. `_darwin_listening_pids` parsed
+  `lsof` stdout without inspecting its exit code or stderr, so a failed query
+  (binary missing, not permitted) returned `[]` — indistinguishable from "no
+  process owns this port". That silently skipped the ownership proof before any
+  tab is closed, which is exactly the guard this helper exists to provide. Only
+  a clean exit 0/1 with an empty stderr now counts as "nothing is listening";
+  anything else raises, matching its sibling `_darwin_process_cmdline`.
+
+Tests:
+
+- `test_darwin_listening_pids_query_failure_does_not_look_empty` covers a
+  non-zero exit with a stderr message, a hard failure exit, and a stderr
+  message alongside otherwise-parseable output. Verified it fails against the
+  previous behaviour.
 
 ## [1.4.0] - 2026-10-02
 

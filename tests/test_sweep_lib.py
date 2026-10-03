@@ -497,9 +497,13 @@ def test_darwin_listening_pids_parses_lsof_field_output():
 def test_darwin_listening_pids_empty_and_fail_closed():
     from types import SimpleNamespace
 
+    # lsof exits 1 with no output and no stderr when nothing is listening.
     empty = _darwin_listening_pids(9223, run=lambda argv: SimpleNamespace(
-        stdout="", returncode=0))
+        stdout="", returncode=0, stderr=""))
     assert empty == []
+    nothing = _darwin_listening_pids(9223, run=lambda argv: SimpleNamespace(
+        stdout="", returncode=1, stderr=""))
+    assert nothing == []
 
     def boom(argv):
         raise RuntimeError("lsof query failed: gone")
@@ -508,6 +512,24 @@ def test_darwin_listening_pids_empty_and_fail_closed():
         _darwin_listening_pids(9222, run=boom)
     with pytest.raises(ValueError):
         _darwin_listening_pids(0, run=boom)  # invalid port rejected first
+
+
+def test_darwin_listening_pids_query_failure_does_not_look_empty():
+    # Regression: a failed lsof query used to return [], which reads as "no
+    # process owns this port" and silently skips the ownership proof before any
+    # tab is closed. A real failure must raise instead.
+    from types import SimpleNamespace
+
+    with pytest.raises(RuntimeError, match="lsof query failed"):
+        _darwin_listening_pids(9222, run=lambda argv: SimpleNamespace(
+            stdout="", returncode=1, stderr="lsof: status error on /dev/ttys000"))
+    with pytest.raises(RuntimeError, match="lsof query failed"):
+        _darwin_listening_pids(9222, run=lambda argv: SimpleNamespace(
+            stdout="", returncode=127, stderr=""))
+    # Permission failure on stderr is a failure even alongside parseable output.
+    with pytest.raises(RuntimeError, match="lsof query failed"):
+        _darwin_listening_pids(9222, run=lambda argv: SimpleNamespace(
+            stdout="p4242\n", returncode=0, stderr="lsof: cannot open /proc"))
 
 
 def test_darwin_process_cmdline_via_ps_and_fail_closed():
