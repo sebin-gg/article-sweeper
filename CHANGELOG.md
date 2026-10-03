@@ -3,6 +3,11 @@
 All notable changes to this skill follow Keep a Changelog. Versions use
 semver and match `metadata.version` in SKILL.md frontmatter.
 
+## [Unreleased]
+
+- Repository-wide review pass: no behavioural change in this entry; it exists
+  to carry the CodeRabbit full-review findings for this skill.
+
 ## [1.4.0] - 2026-10-02
 
 Added:
