@@ -138,15 +138,38 @@ the **vendor's actual preference schema**, not a universal constant:
 
 Without confirmed restore, tabs do not come back: do not restart.
 
+### Verify the backup before you trust it
+
+A `cp -r` that is interrupted, or that ran out of disk, leaves a directory
+that *looks* like a backup. Restarting against it trades in-progress tabs for
+a corrupt session, which is the one outcome worse than not restarting at all.
+The backup is the last line of defence, so check it:
+
+- `Sessions/` exists and is non-empty (Chromium) — an empty dir means the
+  copy silently failed or raced a running browser.
+- `Preferences` parses as JSON (Chromium) / `prefs.js` is non-empty
+  (Firefox).
+- File count and total bytes are plausible versus the source. A backup an
+  order of magnitude smaller means a truncated copy, not a compact session.
+- The copy happened while the browser was **not** mid-write if you can
+  control that; otherwise re-copy anything whose mtime is newer than the
+  backup's own start.
+
+If any check fails, say so and **do not restart**. Report the failed check
+rather than proceeding on the assumption that it probably worked.
+
 ## Launch per OS (Chromium derivatives that still allow it)
 
 ```bash
 # Linux (X11/XWayland) — example: Brave on its own port
-DISPLAY=:0 nohup brave --remote-debugging-port=9225 >$SCRATCH/brave-dev.log 2>&1 &
+DISPLAY=:0 nohup brave --remote-debugging-address=127.0.0.1 \
+  --remote-debugging-port=9225 >$SCRATCH/brave-dev.log 2>&1 &
 # macOS (no DISPLAY, no ozone flag)
-"/Applications/Brave Browser.app/Contents/MacOS/Brave Browser" --remote-debugging-port=9225 &
+"/Applications/Brave Browser.app/Contents/MacOS/Brave Browser" \
+  --remote-debugging-address=127.0.0.1 --remote-debugging-port=9225 &
 # Windows (cmd)
-"C:\Program Files\Brave\brave.exe" --remote-debugging-port=9225
+"C:\Program Files\Brave\brave.exe" --remote-debugging-address=127.0.0.1 \
+  --remote-debugging-port=9225
 curl -s http://127.0.0.1:9225/json/version
 ```
 

@@ -22,6 +22,30 @@ Tests:
   message alongside otherwise-parseable output. Verified it fails against the
   previous behaviour.
 
+## [1.5.2] - 2026-10-03
+
+Closes two gaps in the 1.5.1 dev-mode hardening.
+
+Fixed:
+
+- The 1.5.1 address binding was **incomplete**: it covered the
+  dedicated-profile launch example and missed the three restart-launch
+  commands in `dev-mode.md` (Linux, macOS, Windows Brave). All launch
+  examples now pass `--remote-debugging-address=127.0.0.1`.
+- `dev-mode.md` required taking a backup before any kill but never required
+  **verifying** it. An interrupted or truncated copy leaves a directory that
+  looks like a backup, and restarting against it trades in-progress tabs for a
+  corrupt session. Added explicit checks: `Sessions/` non-empty,
+  `Preferences` parses as JSON (or `prefs.js` non-empty), file count and byte
+  total plausible versus the source, and no file newer than the backup's own
+  start. Any failure means do not restart.
+
+Tests:
+
+- 3 new tests: every browser launch example binds the debug port to loopback
+  (catches the exact omission above), the port is documented as an
+  unauthenticated control channel, and the backup must be verified.
+
 ## [1.5.1] - 2026-10-03
 
 Hardening pass responding to the drawbacks raised against 1.5.0.

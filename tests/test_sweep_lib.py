@@ -1,5 +1,6 @@
 """Behavioral tests for sweep_lib + script CLIs (mocked CDP/Firefox fixtures)."""
 import json
+import re
 import os
 import subprocess
 import sys
@@ -1649,3 +1650,52 @@ def test_user_named_override_still_closes_a_weak_signal():
                             user_named=frozenset({url}))[0]
     assert d.decision == ARTICLE
     assert d.is_closable is True
+
+
+# ---------------------------------------------------------------------------
+# Dev-mode launch examples must bind the debug port to loopback (feedback #1)
+# ---------------------------------------------------------------------------
+
+def _browser_launch_lines():
+    """Every line in the skill docs that launches a browser with a debug port."""
+    root = Path(__file__).resolve().parents[1] / "article-sweeper"
+    out = []
+    for md in sorted(root.rglob("*.md")):
+        lines = md.read_text(encoding="utf-8").splitlines()
+        for i, line in enumerate(lines):
+            if "remote-debugging-port=" not in line:
+                continue
+            if not re.search(r"\b(chrome|brave|thorium|edge|vivaldi|opera)\b", line, re.I):
+                continue  # prose describing the flag, not a launch command
+            # Flags may wrap onto a continuation line, so look at the command block.
+            out.append((md.name, i + 1, "\n".join(lines[max(0, i - 2):i + 3])))
+    return out
+
+
+def test_every_browser_launch_example_binds_the_debug_port_to_loopback():
+    # The debug port is an unauthenticated control channel: anything local that
+    # can reach it reads tabs and cookies and can close or navigate them. An
+    # earlier fix covered the dedicated-profile example and missed the three
+    # restart-launch examples; this pins every one of them.
+    launches = _browser_launch_lines()
+    assert launches, "no browser launch examples found — the scan is broken"
+    unbound = [f"{name}:{lineno}" for name, lineno, block in launches
+               if "remote-debugging-address" not in block]
+    assert unbound == [], f"debug port not bound to loopback at: {unbound}"
+
+
+def test_dev_mode_doc_warns_the_port_is_unauthenticated():
+    text = (Path(__file__).resolve().parents[1] / "article-sweeper"
+            / "references" / "dev-mode.md").read_text(encoding="utf-8")
+    assert "unauthenticated control channel" in text
+    assert "0.0.0.0" in text  # names the thing not to do
+
+
+def test_dev_mode_requires_verifying_the_backup_before_restarting():
+    # A crashed or truncated cp leaves a directory that looks like a backup;
+    # restarting against it trades in-progress tabs for a corrupt session.
+    text = (Path(__file__).resolve().parents[1] / "article-sweeper"
+            / "references" / "dev-mode.md").read_text(encoding="utf-8")
+    assert "Verify the backup" in text
+    assert "non-empty" in text
+    assert "do not restart" in text.lower()
