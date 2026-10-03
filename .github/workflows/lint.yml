@@ -65,3 +65,25 @@ jobs:
         run: "pip install --only-binary=:all: --require-hashes -r requirements-ci.txt"
       - name: Behavioral tests (mocked CDP / Firefox fixtures)
         run: python -m pytest tests/ -q
+
+  test-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - name: Install test deps (hash-locked)
+        run: "pip install --only-binary=:all: --require-hashes -r requirements-ci.txt"
+      - name: Behavioral tests on macOS
+        run: python -m pytest tests/ -q
+      - name: macOS validation report
+        if: always()
+        run: |
+          {
+            echo "## macOS validation"
+            echo "- Runner: $(sw_vers -productVersion) ($(uname -m))"
+            echo "- Python: $(python3 --version)"
+            echo "- Result: ${{ job.status }}"
+            echo "- Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          } >> "$GITHUB_STEP_SUMMARY"

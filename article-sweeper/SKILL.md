@@ -4,7 +4,7 @@ description: Summarize open article tabs in Thorium, Chromium, Chrome, Brave, Ed
 license: MIT
 allowed-tools: Bash Read Edit Write Task WebFetch WebSearch
 metadata:
-  version: "1.3.10"
+  version: "1.4.0"
   tags: "browser,tabs,summarize,thorium,chromium,firefox"
 ---
 
@@ -251,7 +251,7 @@ python3 scripts/cdp_close.py ids.txt --host 127.0.0.1 --port <port> \
   --endpoint 127.0.0.1:<port>
 ```
 
-When this workflow launched the browser itself (Linux), also pass
+When this workflow launched the browser itself (Linux/macOS), also pass
 `--expect-cmd` with a launch command fragment (binary name or
 `--user-data-dir=…`): the listening PID's command line must contain it,
 tying the endpoint to the exact process, not just the browser family

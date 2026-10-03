@@ -15,6 +15,7 @@ import json
 import os
 import re
 import socket
+import sys
 import tempfile
 import urllib.error
 import urllib.parse
@@ -745,18 +746,44 @@ def _port_inodes(net_tcp_text: str, port: int) -> set[int]:
     return inodes
 
 
+def _darwin_listening_pids(port: int, *, run=None) -> list[int]:
+    """PIDs holding a LISTEN socket on `port` (macOS; `lsof` based).
+
+    The /proc/net/{tcp,tcp6} tables do not exist on macOS, so lsof is the
+    equivalent ground truth (`-Fp` prints one `p<pid>` field line per
+    process). `run` is injectable for tests. Fail closed: any query
+    failure raises RuntimeError; an empty result is a legitimate [].
+    """
+    import subprocess
+    if run is None:
+        def run(argv):
+            try:
+                return subprocess.run(argv, capture_output=True, text=True,
+                                      timeout=30)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise RuntimeError(f"lsof query failed: {exc}")
+    port = validate_port(port)
+    proc = run(["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-Fp"])
+    return sorted({int(ln[1:]) for ln in proc.stdout.splitlines()
+                   if ln.startswith("p") and ln[1:].isdigit()})
+
+
 def find_pids_listening_on(port: int, *, proc_root: str = "/proc") -> list[int]:
-    """PIDs holding a LISTEN socket on `port` (Linux /proc only).
+    """PIDs holding a LISTEN socket on `port` (Linux /proc; macOS via lsof).
 
     Product checks prove *which browser family* answers a port, not
     *which process*. When the workflow launched the browser itself, this
     maps the port back to owner PID(s) so the command line (binary,
-    --user-data-dir) can be confirmed. Raises RuntimeError off Linux.
-    `proc_root` is injectable for tests.
+    --user-data-dir) can be confirmed. Raises RuntimeError when the
+    platform lookup itself fails. `proc_root` is injectable for tests
+    (only the real default "/proc" routes to lsof on macOS).
     """
     port = validate_port(port)
     if os.name != "posix":
         raise RuntimeError("process lookup needs Linux /proc")
+    if (proc_root == "/proc" and sys.platform == "darwin"
+            and not os.path.exists(os.path.join(proc_root, "net"))):
+        return _darwin_listening_pids(port)
     inodes: set[int] = set()
     for table in ("net/tcp", "net/tcp6"):  # IPv6 listeners live in tcp6
         path = os.path.join(proc_root, table)
@@ -793,11 +820,30 @@ def find_pids_listening_on(port: int, *, proc_root: str = "/proc") -> list[int]:
     return sorted(pids)
 
 
+def _darwin_process_cmdline(pid: int, *, run=None) -> str:
+    """Command line of `pid` on macOS via `ps -o args=`. Fail closed."""
+    import subprocess
+    if run is None:
+        def run(argv):
+            try:
+                return subprocess.run(argv, capture_output=True, text=True,
+                                      timeout=30)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise RuntimeError(f"ps query failed: {exc}")
+    proc = run(["ps", "-p", str(int(pid)), "-o", "args="])
+    if proc.returncode != 0 or not proc.stdout.strip():
+        raise RuntimeError(f"ps gave no cmdline for pid {pid}")
+    return proc.stdout.strip()
+
+
 def read_process_cmdline(pid: int, *, proc_root: str = "/proc") -> str:
-    """NUL-joined command line of `pid` (Linux /proc only)."""
+    """NUL-joined command line of `pid` (Linux /proc; macOS via ps)."""
+    path = os.path.join(proc_root, str(int(pid)), "cmdline")
+    if (proc_root == "/proc" and sys.platform == "darwin"
+            and not os.path.exists(path)):
+        return _darwin_process_cmdline(pid)
     try:
-        with open(os.path.join(proc_root, str(int(pid)), "cmdline"),
-                  "rb") as fh:
+        with open(path, "rb") as fh:
             raw = fh.read()
     except (OSError, ValueError) as exc:
         raise RuntimeError(f"cannot read cmdline of pid {pid}: {exc}")
