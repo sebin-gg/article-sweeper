@@ -44,6 +44,15 @@ from sweep_lib import (  # noqa: E402
     validate_host,
     validate_port,
     verify_close_candidates,
+    # Typed classifier + paywall policy (customer feedback #3/#4/#5)
+    ARTICLE,
+    DUPLICATE_OF,
+    LEAVE_OPEN,
+    TabDecision,
+    classify_tabs_typed,
+    is_blocked_status,
+    is_paywalled,
+    plan_fetch,
 )
 
 PY = sys.executable
@@ -1461,3 +1470,117 @@ def test_cdp_close_expect_cmd_mismatch_refuses(tmp_path):
             r.stderr + r.stdout)  # fail-closed message shared by
         # /proc cmdline (Linux CI) and image-path (Windows) proofs
         assert cdp.closed_puts == []  # refused before any close
+
+
+# ---------------------------------------------------------------------------
+# Typed classifier (customer feedback #3)
+# ---------------------------------------------------------------------------
+
+def test_classify_tabs_typed_returns_one_typed_decision_per_tab():
+    tabs = [
+        {"id": "1", "url": "https://ex.com/blog/post-one", "title": "One"},
+        {"id": "2", "url": "https://github.com/a/b", "title": "repo"},
+        {"id": "3", "url": "https://ex.com/other/story", "title": "Two"},
+    ]
+    out = classify_tabs_typed(tabs)
+    assert len(out) == len(tabs)
+    assert all(isinstance(d, TabDecision) for d in out)
+    assert [d.decision for d in out] == [ARTICLE, LEAVE_OPEN, ARTICLE]
+    assert [d.tab_ids for d in out] == [("1",), ("2",), ("3",)]
+
+
+def test_classify_tabs_typed_only_emits_the_three_documented_values():
+    tabs = [
+        {"id": str(i), "url": f"https://ex{i}.com/blog/p", "title": "t"}
+        for i in range(6)
+    ] + [{"id": "x", "url": "https://mail.google.com/inbox", "title": "inbox"}]
+    allowed = {ARTICLE, LEAVE_OPEN, DUPLICATE_OF}
+    assert {d.decision for d in classify_tabs_typed(tabs)} <= allowed
+
+
+def test_classify_tabs_typed_collapses_tracking_param_duplicates():
+    out = classify_tabs_typed([
+        {"id": "1", "url": "https://ex.com/blog/post", "title": "P"},
+        {"id": "2", "url": "https://ex.com/blog/post?utm_source=hn", "title": "P"},
+        {"id": "3", "url": "https://ex.com/blog/post#comments", "title": "P"},
+    ])
+    assert out[0].decision == ARTICLE
+    assert out[1].decision == DUPLICATE_OF
+    assert out[2].decision == DUPLICATE_OF
+    # The duplicate points at the keeper so every id still closes together.
+    assert out[1].duplicate_of == out[0].url
+    assert out[2].duplicate_of == out[0].url
+
+
+def test_classify_tabs_typed_does_not_merge_significant_query_params():
+    # Pagination/language/content ids are meaningful; only tracking is dropped.
+    out = classify_tabs_typed([
+        {"id": "1", "url": "https://ex.com/blog/post?page=1", "title": "A"},
+        {"id": "2", "url": "https://ex.com/blog/post?page=2", "title": "B"},
+    ])
+    assert all(d.decision == ARTICLE for d in out)
+    assert out[1].decision != DUPLICATE_OF
+
+
+def test_classify_tabs_typed_user_named_override_forces_article():
+    out = classify_tabs_typed(
+        [{"id": "1", "url": "https://github.com/a/b", "title": "repo"}],
+        user_named=frozenset({"https://github.com/a/b"}),
+    )
+    assert out[0].decision == ARTICLE
+    assert out[0].reason == "user-named"
+
+
+def test_classify_tabs_typed_accepts_tab_records_and_dicts():
+    mixed = [TabRecord(id="1", url="https://ex.com/blog/a", title="A"),
+             {"id": "2", "url": "https://ex.com/blog/b", "title": "B"}]
+    assert [d.decision for d in classify_tabs_typed(mixed)] == [ARTICLE, ARTICLE]
+
+
+def test_classify_tabs_typed_rejects_unsupported_input():
+    with pytest.raises(TypeError):
+        classify_tabs_typed(["not-a-tab"])
+
+
+def test_tab_decision_unpacks_as_decision_url():
+    d = TabDecision(url="https://ex.com/a", decision=ARTICLE, reason="r", canonical="c")
+    decision, url = d
+    assert (decision, url) == (ARTICLE, "https://ex.com/a")
+    assert d.is_article is True
+
+
+# ---------------------------------------------------------------------------
+# Paywall policy (customer feedback #5)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("url", [
+    "https://medium.com/@a/story",
+    "https://www.nytimes.com/2026/01/01/x",
+    "https://www.wsj.com/articles/x",
+    "https://bloomberg.com/news/x",
+    "https://telegraph.co.uk/x",
+])
+def test_paywalled_hosts_detected(url):
+    assert is_paywalled(url) is True
+
+
+def test_paywalled_subdomain_and_negative_cases():
+    assert is_paywalled("https://www.medium.com/@a/s") is True
+    assert is_paywalled("https://example.com/blog/x") is False
+    assert is_paywalled("not a url") is False
+
+
+def test_plan_fetch_skips_paywalled_by_default():
+    # Feedback #5: no wasted fetch, no search fallback unless asked.
+    assert plan_fetch("https://medium.com/x") == "skip-fetch-title-only"
+    assert plan_fetch("https://medium.com/x", allow_search_fallback=True) \
+        == "fetch-then-search-on-block"
+    assert plan_fetch("https://example.com/blog/x") == "fetch"
+
+
+@pytest.mark.parametrize("status,blocked", [
+    (401, True), (402, True), (403, True), (451, True),
+    (200, False), (404, False), (500, False), (None, False), ("x", False),
+])
+def test_is_blocked_status(status, blocked):
+    assert is_blocked_status(status) is blocked

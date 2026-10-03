@@ -467,6 +467,148 @@ def classify_url(url: str, title: str = "") -> tuple[bool, str]:
 
 
 # ---------------------------------------------------------------------------
+# Typed classification (customer feedback #3)
+#
+# The prose classifier cost real money and seconds per sweep. This is the
+# cheap gate that runs first: one pass, no generation, no tokens. It returns
+# a *typed* decision the agent can branch on, and only the surviving
+# `article` entries ever reach the expensive summarizer.
+# ---------------------------------------------------------------------------
+
+ARTICLE = "article"
+LEAVE_OPEN = "leave-open"
+DUPLICATE_OF = "duplicate-of"
+
+
+@dataclass(frozen=True)
+class TabDecision:
+    """Typed, auditable decision for one tab. No prose anywhere."""
+
+    url: str
+    decision: str
+    reason: str
+    canonical: str
+    duplicate_of: str = ""      # canonical URL of the kept tab, when duplicated
+    title: str = ""
+    tab_ids: tuple[str, ...] = ()
+
+    @property
+    def is_article(self) -> bool:
+        return self.decision == ARTICLE
+
+    def __iter__(self):
+        """Unpack as the documented (decision, url) pair."""
+        return iter((self.decision, self.url))
+
+
+def _tab_fields(tab):
+    """Accept TabRecord or dict; return (url, title, tab_id)."""
+    if isinstance(tab, TabRecord):
+        return tab.url, tab.title, tab.id
+    if isinstance(tab, dict):
+        return (str(tab.get("url", "")),
+                str(tab.get("title", "") or ""),
+                str(tab.get("id", "") or ""))
+    raise TypeError(f"tab must be TabRecord or dict, got {type(tab).__name__}")
+
+
+def classify_tabs_typed(
+    tabs: list,
+    *,
+    user_named: frozenset[str] = frozenset(),
+) -> list[TabDecision]:
+    """Classify every tab in one pass into a typed decision.
+
+    `tabs` accepts `TabRecord` objects or dicts with url/title/id. Returns one
+    `TabDecision` per tab, in input order.
+
+    Duplicates: tabs sharing a canonical URL collapse — the first is the keeper
+    and every later one is `duplicate-of:<canonical>`, pointing at the keeper so
+    all of them still close together. Near-duplicates the canonicalizer does not
+    merge (AMP, share tokens, author subdomains) are NOT collapsed here; they
+    surface as separate `article` decisions for the agent to judge.
+    """
+    seen: dict[str, TabDecision] = {}
+    out: list[TabDecision] = []
+    for tab in tabs:
+        url, title, tab_id = _tab_fields(tab)
+        canonical = dedupe_key(url)
+        prior = seen.get(canonical)
+        if prior is not None:
+            out.append(TabDecision(
+                url=url, decision=DUPLICATE_OF, reason="canonical-duplicate",
+                canonical=canonical, duplicate_of=prior.url, title=title,
+                tab_ids=(tab_id,) if tab_id else (),
+            ))
+            continue
+
+        if canonical in user_named:
+            decision, reason = ARTICLE, "user-named"
+        else:
+            is_article, reason = classify_url(url, title)
+            decision = ARTICLE if is_article else LEAVE_OPEN
+        d = TabDecision(
+            url=url, decision=decision, reason=reason, canonical=canonical,
+            title=title, tab_ids=(tab_id,) if tab_id else (),
+        )
+        seen[canonical] = d
+        out.append(d)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Paywall / blocked-host policy (customer feedback #4 and #5)
+# ---------------------------------------------------------------------------
+
+PAYWALLED_HOSTS = frozenset({
+    "medium.com", "nytimes.com", "wsj.com", "bloomberg.com",
+    "theatlantic.com", "economist.com", "ft.com", "washingtonpost.com",
+    "newyorker.com", "sfgate.com", "seattletimes.com", "bostonglobe.com",
+    "chicagotribune.com", "latimes.com", "telegraph.co.uk", "thetimes.co.uk",
+    "wsj.eu", "arstechnica.com", "techcrunch.com", "wired.com",
+})
+
+# Statuses meaning "the publisher refused", not "the page moved".
+BLOCKED_STATUS = frozenset({401, 402, 403, 451})
+
+SKIP_FETCH_TITLE_ONLY = "skip-fetch-title-only"
+FETCH_THEN_SEARCH = "fetch-then-search-on-block"
+FETCH = "fetch"
+
+
+def is_paywalled(url: str) -> bool:
+    """True when the host is known to block or paywall direct fetches."""
+    try:
+        host = (urllib.parse.urlparse(url or "").hostname or "").lower().rstrip(".")
+    except Exception:
+        return False
+    return any(host == h or host.endswith("." + h) for h in PAYWALLED_HOSTS)
+
+
+def plan_fetch(url: str, *, allow_search_fallback: bool = False) -> str:
+    """Decide how to get an article body *before* spending a request.
+
+    Returns SKIP_FETCH_TITLE_ONLY, FETCH_THEN_SEARCH or FETCH.
+
+    Feedback #5: paywalled domains skip the search fallback by default. A
+    search-based summary of a paywalled article is usually worse than an honest
+    title+domain line, and each fallback costs a round trip. Opt in per sweep
+    with `allow_search_fallback=True`.
+    """
+    if is_paywalled(url):
+        return FETCH_THEN_SEARCH if allow_search_fallback else SKIP_FETCH_TITLE_ONLY
+    return FETCH
+
+
+def is_blocked_status(status) -> bool:
+    """True for HTTP statuses that mean 'publisher refused'."""
+    try:
+        return int(status) in BLOCKED_STATUS
+    except (TypeError, ValueError):
+        return False
+
+
+# ---------------------------------------------------------------------------
 # CDP parsing / validation
 # ---------------------------------------------------------------------------
 
