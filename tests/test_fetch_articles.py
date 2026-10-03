@@ -139,3 +139,94 @@ def test_input_reader_skips_malformed_json_lines():
     rows = list(fetch_articles._read_inputs(
         iter(['{"url":"https://a.com/"}', "{bad json", "", "https://b.com/", "{}"])))
     assert rows == ["https://a.com/", "https://b.com/"]
+
+
+# ---------------------------------------------------------------------------
+# Per-domain concurrency (customer feedback #4)
+#
+# A single global pool sends every concurrent fetch at one host: 8 Medium tabs
+# became 8 simultaneous requests to Medium, which is how you collect a 429 and a
+# temporary ban. Concurrency must be keyed per host.
+# ---------------------------------------------------------------------------
+
+def _peak_per_host(urls, gates):
+    """Run `urls` through `gates` and return the peak simultaneous count/host."""
+    import threading
+    import time
+    import concurrent.futures as cf
+    live, peak, lock = {}, {}, threading.Lock()
+
+    def slow(url, **kw):
+        h = fetch_articles.host_of(url) or url
+        with lock:
+            live[h] = live.get(h, 0) + 1
+            peak[h] = max(peak.get(h, 0), live[h])   # recorded, never decremented
+        time.sleep(0.02)
+        with lock:
+            live[h] -= 1
+        return {"url": url}
+
+    monkey = fetch_articles.fetch_one
+    fetch_articles.fetch_one = slow
+    try:
+        with cf.ThreadPoolExecutor(max_workers=20) as pool:
+            list(pool.map(lambda u: gates.run(u, lambda x: slow(x)), urls))
+    finally:
+        fetch_articles.fetch_one = monkey
+    return peak
+
+
+@pytest.mark.parametrize("url,expect", [
+    ("https://medium.com/@a/p", "medium.com"),
+    ("https://www.medium.com/@a/p", "medium.com"),   # www stripped
+    ("https://MEDIUM.com/@a/p", "medium.com"),       # case-folded
+    ("https://sub.example.co.uk/x", "sub.example.co.uk"),
+    ("not a url", ""),                                 # unparseable -> caller falls back
+])
+def test_host_of_normalises(url, expect):
+    assert fetch_articles.host_of(url) == expect
+
+
+def test_per_domain_cap_holds_under_concurrency():
+    urls = ([f"https://medium.com/@a/p{i}" for i in range(8)]
+            + [f"https://ex{i}.com/blog/p" for i in range(12)])
+    peak = _peak_per_host(urls, fetch_articles._DomainGates(2))
+    assert max(peak.values()) <= 2, f"per-domain cap violated: {peak}"
+
+
+def test_ungated_concurrency_would_violate_the_cap():
+    # Guards against the cap being vacuous: without gates the same workload
+    # really does pile onto one host.
+    class _Open:
+        def run(self, u, fn):
+            return fn(u)
+
+    urls = [f"https://medium.com/@a/p{i}" for i in range(8)]
+    peak = _peak_per_host(urls, _Open())
+    assert max(peak.values()) > 2
+
+
+def test_distinct_hosts_still_run_in_parallel():
+    urls = [f"https://ex{i}.com/blog/p" for i in range(8)]
+    peak = _peak_per_host(urls, fetch_articles._DomainGates(2))
+    # 8 different hosts, cap 2 each -> more than one host active at once.
+    assert len(peak) == 8
+    assert sum(peak.values()) > 2
+
+
+def test_cli_rejects_zero_per_domain(tmp_path):
+    inp = tmp_path / "in.jsonl"
+    inp.write_text("")
+    proc = subprocess.run([PY, str(SCRIPT), "--per-domain", "0"],
+                          stdin=inp.open(), capture_output=True, text=True, timeout=30)
+    assert proc.returncode != 0
+    assert "per-domain" in proc.stderr.lower()
+
+
+def test_cli_accepts_per_domain_flag(tmp_path):
+    inp = tmp_path / "in.jsonl"
+    inp.write_text("https://medium.com/x\n")
+    proc = subprocess.run(
+        [PY, str(SCRIPT), "--concurrency", "4", "--per-domain", "1"],
+        stdin=inp.open(), capture_output=True, text=True, timeout=90)
+    assert proc.returncode == 0, proc.stderr

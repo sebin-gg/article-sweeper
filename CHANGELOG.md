@@ -22,6 +22,48 @@ Tests:
   message alongside otherwise-parseable output. Verified it fails against the
   previous behaviour.
 
+## [1.5.1] - 2026-10-03
+
+Hardening pass responding to the drawbacks raised against 1.5.0.
+
+Fixed:
+
+- **Per-domain fetch concurrency (feedback #4).** `fetch_articles.py` ran a
+  single global pool of 20, so every concurrent fetch hit the *same* host:
+  eight Medium tabs meant eight simultaneous requests to Medium, which is how a
+  sweep collects a 429 and a temporary ban. Concurrency is now keyed per host
+  via `--per-domain` (default 2), so breadth still scales across domains while
+  any one host stays polite. Verified: the same workload peaks at 8 concurrent
+  per host ungated and exactly 2 with the cap.
+- **`unsure` is a real decision, not a guess (feedback #2 and #3).** The typed
+  gate mapped `default-candidate` to `article`, so a newsletter on `/lp/` or
+  any app-like path became an article — and `article` feeds the one
+  irreversible step in a sweep. `default-candidate` now returns `unsure`, which
+  `TabDecision.is_closable` reports as `False`. Only `article-path-hint` and
+  `user-named` authorize a close on their own. Verified against the previous
+  behaviour: `https://newsletter.io/lp/q3-update` classified as `article`
+  before, `unsure` now.
+
+Changed:
+
+- SKILL.md documents that `unsure` must be judged or left open, never promoted
+  in bulk.
+- Dev-mode examples bind `--remote-debugging-address=127.0.0.1` explicitly and
+  carry a warning that the debugging port is an unauthenticated control channel
+  readable by any local process (feedback #1).
+- Title-only paywall entries must be filed as `NOT SUMMARIZED` with the title
+  quoted verbatim, never paraphrased into a claim, so they cannot be mistaken
+  for real summaries (feedback #5). The paywall denylist is documented as a
+  floor: a live `blocked` result outranks it.
+- Documented that a small `bytes` with `status: ok` usually means an empty
+  JS shell rather than an empty article.
+
+Tests:
+
+- 17 new tests covering `unsure` semantics and close eligibility,
+  `STRONG_ARTICLE_REASONS`, host normalisation, the per-domain cap holding
+  under concurrency, and that the ungated version demonstrably violates it.
+
 ## [1.5.0] - 2026-10-03
 
 Addresses customer feedback 3-6.

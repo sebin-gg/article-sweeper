@@ -28,8 +28,18 @@ Consequences for this skill:
 ```bash
 # Linux
 google-chrome --user-data-dir="$HOME/.config/google-chrome-sweeper" \
+  --remote-debugging-address=127.0.0.1 \
   --remote-debugging-port=9224
 ```
+
+> **The debugging port is an unauthenticated control channel.** Anything that
+> can reach it can read every open tab, read cookies, and close or navigate
+> tabs. Bind it to loopback explicitly (`--remote-debugging-address=127.0.0.1`)
+> — never `0.0.0.0`. Loopback is still shared with every other local app and
+> browser extension, so treat the port as sensitive: use a dedicated
+> `--user-data-dir`, pick an uncommon port, and close the debugging browser when
+> the sweep finishes. Chromium browsers warn about this on launch; do not
+> suppress the warning.
 
   Then sweep the tabs visible in that debugging instance. Tabs left in
   the real default profile are out of scope for the run — report them

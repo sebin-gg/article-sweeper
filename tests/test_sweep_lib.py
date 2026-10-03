@@ -48,6 +48,8 @@ from sweep_lib import (  # noqa: E402
     ARTICLE,
     DUPLICATE_OF,
     LEAVE_OPEN,
+    UNSURE,
+    STRONG_ARTICLE_REASONS,
     TabDecision,
     classify_tabs_typed,
     is_blocked_status,
@@ -1485,7 +1487,8 @@ def test_classify_tabs_typed_returns_one_typed_decision_per_tab():
     out = classify_tabs_typed(tabs)
     assert len(out) == len(tabs)
     assert all(isinstance(d, TabDecision) for d in out)
-    assert [d.decision for d in out] == [ARTICLE, LEAVE_OPEN, ARTICLE]
+    # /other/story carries no strong path hint, so it is `unsure`, not article.
+    assert [d.decision for d in out] == [ARTICLE, LEAVE_OPEN, UNSURE]
     assert [d.tab_ids for d in out] == [("1",), ("2",), ("3",)]
 
 
@@ -1584,3 +1587,65 @@ def test_plan_fetch_skips_paywalled_by_default():
 ])
 def test_is_blocked_status(status, blocked):
     assert is_blocked_status(status) is blocked
+
+
+# ---------------------------------------------------------------------------
+# `unsure` is the safety valve (customer feedback #2 and #3)
+#
+# Heuristics that only reach `default-candidate` must not become `article`,
+# because `article` feeds the one irreversible step in a sweep. Verified before
+# the fix: https://newsletter.io/lp/q3-update classified as `article`.
+# ---------------------------------------------------------------------------
+
+def test_weak_signal_is_unsure_not_article():
+    for url in ("https://newsletter.io/lp/q3-update", "https://somerandom.co/"):
+        d = classify_tabs_typed([{"id": "1", "url": url, "title": "Something"}])[0]
+        assert d.decision == UNSURE, url
+        assert d.reason == "default-candidate"
+        assert d.is_article is False
+
+
+def test_unsure_is_never_closable():
+    d = classify_tabs_typed([{"id": "1", "url": "https://newsletter.io/lp/q",
+                              "title": "Q3"}])[0]
+    assert d.needs_judgment is True
+    assert d.is_closable is False
+    assert d.is_article is False
+
+
+def test_strong_path_hint_is_still_article_and_closable():
+    d = classify_tabs_typed([{"id": "1", "url": "https://ex.com/blog/post",
+                              "title": "Post"}])[0]
+    assert d.decision == ARTICLE
+    assert d.is_closable is True
+
+
+def test_duplicates_are_closable_and_point_at_the_keeper():
+    out = classify_tabs_typed([
+        {"id": "1", "url": "https://ex.com/blog/post", "title": "P"},
+        {"id": "2", "url": "https://ex.com/blog/post?utm_source=x", "title": "P"},
+    ])
+    assert out[0].is_closable is True
+    assert out[1].decision == DUPLICATE_OF
+    assert out[1].is_closable is True
+    assert out[1].duplicate_of == out[0].url
+
+
+def test_leave_open_is_not_closable():
+    d = classify_tabs_typed([{"id": "1", "url": "https://github.com/a/b",
+                              "title": "repo"}])[0]
+    assert d.decision == LEAVE_OPEN
+    assert d.is_closable is False
+
+
+def test_only_strong_reasons_authorize_a_close():
+    assert STRONG_ARTICLE_REASONS == frozenset({"article-path-hint", "user-named"})
+    assert "default-candidate" not in STRONG_ARTICLE_REASONS
+
+
+def test_user_named_override_still_closes_a_weak_signal():
+    url = "https://somerandom.co/"
+    d = classify_tabs_typed([{"id": "1", "url": url, "title": "Home"}],
+                            user_named=frozenset({url}))[0]
+    assert d.decision == ARTICLE
+    assert d.is_closable is True

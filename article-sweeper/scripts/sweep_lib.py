@@ -478,6 +478,14 @@ def classify_url(url: str, title: str = "") -> tuple[bool, str]:
 ARTICLE = "article"
 LEAVE_OPEN = "leave-open"
 DUPLICATE_OF = "duplicate-of"
+# Explicit "cannot tell" outcome (customer feedback #2/#3). Heuristics that only
+# reach `default-candidate` land here instead of silently becoming articles: a
+# wrong `article` is the one irreversible mistake in a sweep, because the tab
+# closes. `unsure` never closes — it goes to agent judgment or stays open.
+UNSURE = "unsure"
+
+# Only these reasons are strong enough to authorize a close on their own.
+STRONG_ARTICLE_REASONS = frozenset({"article-path-hint", "user-named"})
 
 
 @dataclass(frozen=True)
@@ -495,6 +503,15 @@ class TabDecision:
     @property
     def is_article(self) -> bool:
         return self.decision == ARTICLE
+
+    @property
+    def is_closable(self) -> bool:
+        """May this tab be closed? `unsure` never is."""
+        return self.decision in (ARTICLE, DUPLICATE_OF)
+
+    @property
+    def needs_judgment(self) -> bool:
+        return self.decision == UNSURE
 
     def __iter__(self):
         """Unpack as the documented (decision, url) pair."""
@@ -546,7 +563,15 @@ def classify_tabs_typed(
             decision, reason = ARTICLE, "user-named"
         else:
             is_article, reason = classify_url(url, title)
-            decision = ARTICLE if is_article else LEAVE_OPEN
+            if not is_article:
+                decision = LEAVE_OPEN
+            elif reason in STRONG_ARTICLE_REASONS:
+                decision = ARTICLE
+            else:
+                # `default-candidate` means the heuristics only guessed. Guessing
+                # `article` here is what turns a misfiled newsletter into a
+                # closed tab, so it becomes `unsure` and waits for judgment.
+                decision = UNSURE
         d = TabDecision(
             url=url, decision=decision, reason=reason, canonical=canonical,
             title=title, tab_ids=(tab_id,) if tab_id else (),
