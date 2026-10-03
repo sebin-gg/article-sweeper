@@ -764,6 +764,14 @@ def _darwin_listening_pids(port: int, *, run=None) -> list[int]:
                 raise RuntimeError(f"lsof query failed: {exc}")
     port = validate_port(port)
     proc = run(["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-Fp"])
+    # `lsof` exits 1 with empty output when nothing matches, but it also exits
+    # non-zero and writes to stderr when the query itself fails (binary missing,
+    # not permitted). Returning [] for the second case would silently disable the
+    # process-ownership proof this function exists to provide, so only a clean
+    # 0/1 with an empty stderr counts as "nothing is listening".
+    stderr = (getattr(proc, "stderr", "") or "").strip()
+    if proc.returncode not in (0, 1) or stderr:
+        raise RuntimeError(f"lsof query failed (rc={proc.returncode}): {stderr or 'no output'}")
     return sorted({int(ln[1:]) for ln in proc.stdout.splitlines()
                    if ln.startswith("p") and ln[1:].isdigit()})
 
