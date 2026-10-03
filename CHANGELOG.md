@@ -22,6 +22,49 @@ Tests:
   message alongside otherwise-parseable output. Verified it fails against the
   previous behaviour.
 
+## [1.7.0] - 2026-10-03
+
+Resilience under rate limits, and a streaming summary writer.
+
+Retry / backoff (`fetch_articles.py`):
+
+- `fetch_one()` now retries transient failures — `408/425/429/500/502/503/504`
+  and transport errors — with exponential backoff plus **jitter**, up to
+  `--max-attempts` (default 3), honouring a `Retry-After` header when sent.
+- Refusals (`401/402/403/451`) fail on the first attempt. Retrying them is
+  pointless and only annoys the publisher.
+- Every outcome, success or failure, now reports `attempts`. An exhausted `429`
+  still reports `throttled`; an exhausted `503` reports `error`, so the summary
+  line can distinguish "rate limited" from "fetch failed".
+- Jitter is the point, not decoration: without it, N tabs against one host
+  retry in lockstep and re-create the stampede that caused the 429.
+
+Streaming summary writer (`sweep_lib.SummaryStream`):
+
+- Replaces rigid summarize batches. Each entry is durable the moment it is
+  summarized, so losing the process later cannot lose earlier work.
+- **Partial writes**: every entry goes through `atomic_append()` — one locked,
+  fsynced write of complete lines — so a crash leaves whole entries only. An
+  entry can never be half-written because it is fully rendered before the
+  write starts.
+- **Mid-stream failures**: the header declares the run's `expected` count
+  *before* any entry lands, and is recounted against the real entry count as
+  each entry lands. A process killed mid-stream therefore leaves a file that
+  is already self-evidently short, without needing `finalize()`.
+- `finalize()` reconciles the count to the truth and appends a machine-readable
+  `<!-- sweep-stream: emitted=N expected=M complete|partial -->` trailer.
+  `partial` means entries are missing: re-run those URLs rather than close tabs
+  against a short summary.
+
+Tests:
+
+- 22 new tests, 179 pass. Mutation-tested rather than trusted: removing the
+  retry classification fails 4, removing jitter fails 1, dropping the running
+  recount fails 1, and stale header intent fails 1.
+- The stale-header case is worth noting: mutation testing found a gap where
+  *nothing* pinned the initial header, so a crash before the first emit would
+  have looked like an empty sweep instead of a lost one. That test exists now.
+
 ## [1.6.0] - 2026-10-03
 
 Fetch once, use the body for both classification and summarization.

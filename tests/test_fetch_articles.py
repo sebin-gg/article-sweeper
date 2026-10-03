@@ -11,6 +11,11 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "article-sweeper" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 import fetch_articles  # noqa: E402
+from fetch_articles import (  # noqa: E402
+    DEFAULT_BACKOFF_CAP,
+    backoff_delay,
+    is_retryable_status,
+)
 
 PY = sys.executable
 SCRIPT = SCRIPTS / "fetch_articles.py"
@@ -303,3 +308,141 @@ def test_cli_with_text_flag_emits_signals(tmp_path):
     row = json.loads(proc.stdout.splitlines()[0])
     assert row["status"] == "ok"
     assert "signals" in row and "text" in row
+
+
+# --- retry / backoff -------------------------------------------------------
+
+def _http_error(code, headers=None):
+    return HTTPError("u", code, "boom", headers or {}, None)
+
+
+def test_is_retryable_status_covers_transient_only():
+    assert all(is_retryable_status(c) for c in (408, 425, 429, 500, 502, 503, 504))
+    # Refusals must not be retried: it is pointless and rude to the publisher.
+    assert not any(is_retryable_status(c) for c in (401, 402, 403, 404, 451))
+    assert not is_retryable_status(None)
+    assert not is_retryable_status("nonsense")
+
+
+def test_backoff_grows_and_is_capped():
+    d1 = [backoff_delay(1, base=0.5, cap=4) for _ in range(40)]
+    d3 = [backoff_delay(3, base=0.5, cap=4) for _ in range(40)]
+    assert max(d1) <= 0.5 and min(d1) >= 0.25
+    assert max(d3) <= 4.0
+    assert max(d3) > max(d1)
+    assert backoff_delay(99, base=0.5, cap=4) <= 4.0
+
+
+def test_backoff_jitter_actually_varies():
+    """Without spread, N tabs on one host retry in lockstep and re-stampede."""
+    assert len({backoff_delay(2) for _ in range(50)}) > 1
+
+
+def test_backoff_honours_retry_after():
+    assert backoff_delay(1, retry_after="2") == 2.0
+    # A junk header must not crash the retry path.
+    assert 0 <= backoff_delay(1, retry_after="soon") <= DEFAULT_BACKOFF_CAP
+
+
+def test_fetch_one_retries_429_then_succeeds(monkeypatch):
+    seq = [_http_error(429), _http_error(429), _Resp(b"<html>body</html>")]
+    calls = []
+
+    def fake(req, timeout=None):
+        calls.append(1)
+        item = seq.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    monkeypatch.setattr(fetch_articles.urllib.request, "urlopen", fake)
+    monkeypatch.setattr(fetch_articles.time, "sleep", lambda s: None)
+    out = fetch_articles.fetch_one("https://ex.com/a", timeout=1, allow_search_fallback=False)
+    assert out["status"] == "ok" and out["attempts"] == 3 and len(calls) == 3
+
+
+def test_fetch_one_retries_transport_errors(monkeypatch):
+    def fake(req, timeout=None):
+        calls.append(1)
+        if len(calls) < 3:
+            raise fetch_articles.urllib.error.URLError("conn reset")
+        return _Resp(b"body")
+
+    calls = []
+    monkeypatch.setattr(fetch_articles.urllib.request, "urlopen",
+                        lambda req, timeout=None: fake(req, timeout))
+    monkeypatch.setattr(fetch_articles.time, "sleep", lambda s: None)
+    out = fetch_articles.fetch_one("https://ex.com/b", timeout=1, allow_search_fallback=False)
+    assert out["status"] == "ok" and out["attempts"] == 3
+
+
+def test_fetch_one_does_not_retry_403(monkeypatch):
+    calls = []
+
+    def fake(req, timeout=None):
+        calls.append(1)
+        raise _http_error(403)
+
+    monkeypatch.setattr(fetch_articles.urllib.request, "urlopen", fake)
+    monkeypatch.setattr(fetch_articles.time, "sleep", lambda s: None)
+    out = fetch_articles.fetch_one("https://ex.com/c", timeout=1, allow_search_fallback=False)
+    assert out["status"] == "blocked" and len(calls) == 1, "403 must fail on first try"
+
+
+def test_fetch_one_gives_up_after_max_attempts(monkeypatch):
+    calls = []
+
+    def fake(req, timeout=None):
+        calls.append(1)
+        raise _http_error(503)
+
+    monkeypatch.setattr(fetch_articles.urllib.request, "urlopen", fake)
+    monkeypatch.setattr(fetch_articles.time, "sleep", lambda s: None)
+    out = fetch_articles.fetch_one("https://ex.com/d", timeout=1, allow_search_fallback=False,
+                    max_attempts=3)
+    # Exhausted 503 is a plain error; only 429 stays "throttled" so the
+    # summary line can say "rate limited" rather than "fetch failed".
+    assert out["status"] == "error" and out["http"] == 503
+    assert out["attempts"] == 3 and len(calls) == 3
+
+
+def test_max_attempts_one_disables_retry(monkeypatch):
+    calls = []
+
+    def fake(req, timeout=None):
+        calls.append(1)
+        raise _http_error(500)
+
+    monkeypatch.setattr(fetch_articles.urllib.request, "urlopen", fake)
+    monkeypatch.setattr(fetch_articles.time, "sleep", lambda s: None)
+    out = fetch_articles.fetch_one("https://ex.com/e", timeout=1, allow_search_fallback=False,
+                    max_attempts=1)
+    assert out["status"] == "error" and len(calls) == 1
+
+
+def test_paywalled_skip_never_makes_a_request(monkeypatch):
+    calls = []
+    monkeypatch.setattr(fetch_articles.urllib.request, "urlopen",
+                        lambda *a, **k: calls.append(1))
+    out = fetch_articles.fetch_one("https://www.nytimes.com/2026/x.html", timeout=1, allow_search_fallback=False)
+    assert out["status"] == "skipped-paywalled" and out["attempts"] == 0
+    assert not calls
+
+
+def test_every_outcome_reports_attempts(monkeypatch):
+    """Callers count retries from the field; a missing key would KeyError."""
+    monkeypatch.setattr(fetch_articles.urllib.request, "urlopen",
+                        lambda req, timeout=None: _Resp(b"x"))
+    ok = fetch_articles.fetch_one("https://ex.com/f", timeout=1, allow_search_fallback=False)
+    assert ok["attempts"] == 1
+
+
+def test_exhausted_429_still_reports_throttled(monkeypatch):
+    """The distinction survives the retry loop, not just the first failure."""
+    monkeypatch.setattr(fetch_articles.urllib.request, "urlopen",
+                        lambda req, timeout=None: (_ for _ in ()).throw(
+                            _http_error(429)))
+    monkeypatch.setattr(fetch_articles.time, "sleep", lambda s: None)
+    out = fetch_articles.fetch_one("https://ex.com/g", timeout=1,
+                                   allow_search_fallback=False)
+    assert out["status"] == "throttled" and out["attempts"] == 3

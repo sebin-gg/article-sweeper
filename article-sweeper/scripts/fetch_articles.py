@@ -29,8 +29,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import sys
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -100,61 +102,136 @@ class _DomainGates:
             return fn(url)
 
 
+# Statuses worth retrying: transient server-side trouble or explicit throttle.
+# 401/402/403/451 are refusals, not transient -- retrying those is pointless and
+# looks abusive to the publisher, so they fail immediately (see BLOCKED_STATUS).
+RETRY_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
+
+DEFAULT_MAX_ATTEMPTS = 3
+DEFAULT_BACKOFF_BASE = 0.75
+DEFAULT_BACKOFF_CAP = 8.0
+
+
+def is_retryable_status(status) -> bool:
+    """True for statuses where the same request may succeed shortly."""
+    try:
+        return int(status) in RETRY_STATUS
+    except (TypeError, ValueError):
+        return False
+
+
+def backoff_delay(attempt: int, *, retry_after: str = "",
+                  base: float = DEFAULT_BACKOFF_BASE,
+                  cap: float = DEFAULT_BACKOFF_CAP) -> float:
+    """Exponential backoff with jitter; honours `Retry-After` when sent.
+
+    `attempt` is 1-based. Jitter keeps N tabs against one host from retrying in
+    lockstep and re-creating the stampede that caused the 429.
+    """
+    if retry_after:
+        try:
+            return max(0.0, min(float(retry_after), cap * 4))
+        except (TypeError, ValueError):
+            pass
+    raw = min(cap, base * (2 ** max(0, attempt - 1)))
+    return random.uniform(raw / 2.0, raw)
+
+
+def _retry_after_seconds(headers) -> str:
+    try:
+        return str(headers.get("Retry-After", "") or "")
+    except AttributeError:
+        return ""
+
+
 def fetch_one(url: str, *, timeout: float, allow_search_fallback: bool,
-              want_text: bool = False) -> dict:
-    """Fetch one URL. Never raises — every failure becomes a typed outcome."""
+              want_text: bool = False,
+              max_attempts: int = DEFAULT_MAX_ATTEMPTS) -> dict:
+    """Fetch one URL with bounded retry. Never raises.
+
+    Every failure becomes a typed outcome. Transient trouble (429/5xx/network) is
+    retried with exponential backoff and jitter, honouring `Retry-After`;
+    refusals (401/402/403/451) fail immediately, because retrying them only
+    annoys the publisher.
+    """
     plan = plan_fetch(url, allow_search_fallback=allow_search_fallback)
     if plan == SKIP_FETCH_TITLE_ONLY:
         return {"url": url, "status": "skipped-paywalled", "http": None,
-                "needs_search": False, "reason": "paywalled; fetch skipped by policy"}
+                "needs_search": False, "attempts": 0,
+                "reason": "paywalled; fetch skipped by policy"}
 
-    # Request() itself raises ValueError on an unparseable URL, so construction
-    # has to sit inside the try — otherwise one junk input line aborts the run
-    # and every other result is lost.
-    try:
-        req = urllib.request.Request(url, headers={
-            "User-Agent": UA,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        })
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            body = resp.read(MAX_BYTES)
-            out = {
+    attempts = max(1, int(max_attempts))
+    last: dict = {}
+
+    for attempt in range(1, attempts + 1):
+        # Request() itself raises ValueError on an unparseable URL, so construction
+        # has to sit inside the try -- otherwise one junk input line aborts the run
+        # and every other result is lost.
+        try:
+            req = urllib.request.Request(url, headers={
+                "User-Agent": UA,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            })
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                body = resp.read(MAX_BYTES)
+                out = {
+                    "url": url,
+                    "status": "ok",
+                    "http": int(getattr(resp, "status", 200) or 200),
+                    "bytes": len(body),
+                    "content_type": resp.headers.get("Content-Type", ""),
+                    "needs_search": False,
+                    "attempts": attempt,
+                    "reason": "",
+                }
+                if want_text:
+                    # Same request, no extra cost: the body doubles as evidence
+                    # for the still-open `unsure` decision.
+                    try:
+                        raw = body.decode("utf-8", "replace")
+                        out["text"] = html_to_text(raw)[:MAX_TEXT_CHARS]
+                        out["signals"] = content_signals(out["text"])
+                    except Exception:  # noqa: BLE001 - text is best-effort
+                        out["text"] = ""
+                        out["signals"] = {}
+                return out
+
+        except urllib.error.HTTPError as exc:
+            code = int(exc.code)
+            blocked = is_blocked_status(code)
+            more = is_retryable_status(code) and attempt < attempts
+            last = {
                 "url": url,
-                "status": "ok",
-                "http": int(getattr(resp, "status", 200) or 200),
-                "bytes": len(body),
-                "content_type": resp.headers.get("Content-Type", ""),
-                "needs_search": False,
-                "reason": "",
+                "status": ("blocked" if blocked
+                           else "throttled" if (more or code == 429) else "error"),
+                "http": code,
+                "bytes": 0,
+                "content_type": "",
+                "attempts": attempt,
+                # Only route to search when the plan promised it; otherwise a
+                # blocked page just becomes a short honest title+domain entry.
+                "needs_search": blocked and plan == FETCH_THEN_SEARCH,
+                "reason": f"HTTP {code}",
             }
-            if want_text:
-                # Same request, no extra cost: the body doubles as evidence for
-                # the still-open `unsure` decision.
-                try:
-                    raw = body.decode("utf-8", "replace")
-                    out["text"] = html_to_text(raw)[:MAX_TEXT_CHARS]
-                    out["signals"] = content_signals(out["text"])
-                except Exception:  # noqa: BLE001 - text is best-effort
-                    out["text"] = ""
-                    out["signals"] = {}
-            return out
-    except urllib.error.HTTPError as exc:
-        blocked = is_blocked_status(exc.code)
-        return {
-            "url": url,
-            "status": "blocked" if blocked else "error",
-            "http": int(exc.code),
-            "bytes": 0,
-            "content_type": "",
-            # Only route to search when the plan promised it; otherwise a
-            # blocked page just becomes a short honest title+domain entry.
-            "needs_search": blocked and plan == FETCH_THEN_SEARCH,
-            "reason": f"HTTP {exc.code}",
-        }
-    except Exception as exc:  # noqa: BLE001 - any failure is a typed outcome
-        return {"url": url, "status": "error", "http": None, "bytes": 0,
-                "content_type": "", "needs_search": False,
-                "reason": f"{type(exc).__name__}: {exc}"}
+            if not more:
+                return last
+            time.sleep(backoff_delay(attempt,
+                                      retry_after=_retry_after_seconds(exc.headers)))
+
+        except Exception as exc:  # noqa: BLE001 - any failure is a typed outcome
+            more = attempt < attempts
+            last = {
+                "url": url,
+                "status": "throttled" if more else "error",
+                "http": None, "bytes": 0, "content_type": "",
+                "attempts": attempt, "needs_search": False,
+                "reason": f"{type(exc).__name__}: {exc}",
+            }
+            if not more:
+                return last
+            time.sleep(backoff_delay(attempt))
+
+    return last
 
 
 def _read_inputs(stream):
@@ -184,6 +261,9 @@ def main(argv=None) -> int:
                          f"{DEFAULT_PER_DOMAIN}; global concurrency alone gets "
                          f"you rate-limited and banned)")
     ap.add_argument("--timeout", type=float, default=20.0, help="per-request seconds")
+    ap.add_argument("--max-attempts", type=int, default=DEFAULT_MAX_ATTEMPTS,
+                    help="total tries per URL; transient 429/5xx/network "
+                         "are retried with exponential backoff + jitter")
     ap.add_argument("--with-text", action="store_true",
                     help="also emit extracted text + density signals per URL, so "
                          "the same request can resolve `unsure` decisions")
@@ -196,6 +276,8 @@ def main(argv=None) -> int:
         ap.error("--concurrency must be >= 1")
     if args.per_domain < 1:
         ap.error("--per-domain must be >= 1")
+    if args.max_attempts < 1:
+        ap.error("--max-attempts must be >= 1")
 
     urls = list(_read_inputs(sys.stdin))
     if not urls:
@@ -206,7 +288,8 @@ def main(argv=None) -> int:
     def work(u):
         return gates.run(u, lambda url: fetch_one(
             url, timeout=args.timeout, want_text=args.with_text,
-            allow_search_fallback=args.allow_search_fallback))
+            allow_search_fallback=args.allow_search_fallback,
+            max_attempts=args.max_attempts))
 
     # Breadth still comes from the global pool: many hosts proceed at once, while
     # each host is capped independently. Fetches overlap with whatever the agent

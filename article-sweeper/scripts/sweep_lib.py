@@ -1386,6 +1386,113 @@ def atomic_append(path: Path, lines: list[str]) -> None:
                     pass
 
 
+STREAM_TRAILER_RE = re.compile(
+    r"^<!-- sweep-stream: emitted=(?P<emitted>\d+) expected=(?P<expected>\d+)"
+    r"(?: (?P<status>complete|partial))? -->$", re.M)
+
+
+class SummaryStream:
+    """Streaming writer for the summary file: classify -> fetch -> summarize
+    without rigid batches.
+
+    The failure modes a streaming writer normally introduces -- torn entries,
+    partial writes, an untrustworthy count -- are handled structurally rather
+    than by hoping:
+
+    * Every entry is appended through atomic_append(), i.e. one locked,
+      fsynced write of *complete* lines. A crash mid-stream therefore leaves
+      a valid file containing only whole entries; an entry can never be half
+      written, because the entry is fully rendered before the write starts.
+    * `expected` is recorded in the header *before* any entry lands, and
+      recounted against the real entry count at finalize(). If the process
+      dies mid-stream the header says what the run intended to produce and
+      the file shows what it did, so a truncated run is self-evident instead
+      of silently short.
+    * finalize() rewrites the count to the truth and appends a machine
+      readable `<!-- sweep-stream: ... -->` trailer, so a resumed or audited
+      run can be checked without re-parsing prose.
+
+    Ordering is completion order, not source order. That is the point: an
+    entry is durable the moment it is summarized, so losing the process
+    later cannot lose earlier work.
+    """
+
+    def __init__(self, path: Path, expected: int, *, header_extra: str = ""):
+        self.path = Path(path)
+        self.expected = max(0, int(expected))
+        self.emitted = 0
+        self.failed: list[str] = []
+        self._ensure_header(header_extra)
+
+    def _ensure_header(self, header_extra: str) -> None:
+        """Create the file with the intended count; never clobber existing work.
+
+        Re-running a sweep against an existing file must not reset the count to
+        this run's `expected`, so an existing header is left for finalize() to
+        reconcile.
+        """
+        with _summary_lock(self.path):
+            if self.path.exists():
+                return
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.write_text(
+                f"# Tab sweep summary\n\n{self.expected} article tabs summarised. "
+                f"{header_extra}\n".rstrip() + "\n",
+                encoding="utf-8")
+
+    def emit(self, entry_lines: list[str], *, url: str = "") -> None:
+        """Append one complete entry durably.
+
+        Never raises on append failure -- a lost entry must not abort the
+        sweep, but it is recorded as failed and makes the run `partial`.
+        """
+        text = "".join(entry_lines)
+        if not text.startswith("## "):
+            raise ValueError("summary entries must start with '## '")
+        try:
+            atomic_append(self.path, entry_lines)
+        except OSError as exc:  # noqa: PERF203 - failure is recorded, not raised
+            self.failed.append(f"{url or text[:60]} ({exc})")
+            return
+        self.emitted += 1
+        # Keep the running count honest so an interrupted run is readable.
+        recount_and_fix_header(self.path)
+
+    def finalize(self) -> dict:
+        """Reconcile the count to reality and write the stream trailer.
+
+        Returns the manifest, including whether the run completed. `partial`
+        means the stream ended with entries missing, which is the signal to
+        re-run the remaining URLs rather than close tabs on a short summary.
+        """
+        true_count = recount_and_fix_header(self.path)
+        complete = true_count >= self.expected and not self.failed
+        trailer = (f"<!-- sweep-stream: emitted={true_count} "
+                   f"expected={self.expected} "
+                   f"{'complete' if complete else 'partial'} -->")
+        with _summary_lock(self.path):
+            existing = (self.path.read_text(encoding="utf-8")
+                        if self.path.exists() else "")
+            if not STREAM_TRAILER_RE.search(existing):
+                if not existing:
+                    sep = ""
+                elif existing.endswith("\n\n"):
+                    sep = ""
+                elif existing.endswith("\n"):
+                    sep = "\n"
+                else:
+                    sep = "\n\n"
+                with open(self.path, "a", encoding="utf-8") as fh:
+                    fh.write(sep + trailer + "\n")
+        return {
+            "emitted": true_count,
+            "expected": self.expected,
+            "complete": complete,
+            "failed": list(self.failed),
+            "path": str(self.path),
+        }
+
+
 def recount_entries(path: Path) -> int:
     """Authoritative recount of '## ' entries (fixes mutable batch counts)."""
     try:

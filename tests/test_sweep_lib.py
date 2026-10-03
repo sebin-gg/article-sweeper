@@ -11,7 +11,10 @@ import pytest
 SCRIPTS = Path(__file__).resolve().parents[1] / "article-sweeper" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
+import sweep_lib  # noqa: E402  (needed to patch atomic_append)
+from unittest.mock import patch  # noqa: E402
 from sweep_lib import (  # noqa: E402
+    SummaryStream,
     TabRecord,
     atomic_append,
     canonicalize_url,
@@ -1813,3 +1816,121 @@ def test_link_density_separates_article_from_index():
     assert link_density(ARTICLE_HTML) < 0.2
     assert link_density(NAV_HTML) > 0.7
     assert link_density("") == 1.0
+
+
+# --- streaming summary writer ---------------------------------------------
+
+def _entry(n):
+    return [f"## {n}. Article {n}\n", "Body line.\n", "\n"]
+
+
+def test_stream_emits_entries_incrementally(tmp_path):
+    p = tmp_path / "summary.md"
+    s = SummaryStream(p, expected=3)
+    # Durable before the stream is done: this is what batching gave up.
+    s.emit(_entry(1), url="a")
+    assert s.emitted == 1 and "Article 1" in p.read_text(encoding="utf-8")
+    s.emit(_entry(2), url="b")
+    assert "Article 2" in p.read_text(encoding="utf-8")
+
+
+def test_stream_finalize_reconciles_count(tmp_path):
+    p = tmp_path / "summary.md"
+    s = SummaryStream(p, expected=3)
+    for i in (1, 2):
+        s.emit(_entry(i), url=f"u{i}")
+    m = s.finalize()
+    assert m["emitted"] == 2 and m["expected"] == 3 and m["complete"] is False
+    assert "2 article tabs summarised." in p.read_text(encoding="utf-8")
+
+
+def test_stream_complete_when_all_land(tmp_path):
+    p = tmp_path / "summary.md"
+    s = SummaryStream(p, expected=2)
+    s.emit(_entry(1))
+    s.emit(_entry(2))
+    m = s.finalize()
+    assert m["complete"] is True
+    assert "sweep-stream: emitted=2 expected=2 complete" in p.read_text(encoding="utf-8")
+
+
+def test_stream_partial_run_is_self_evident_without_finalize(tmp_path):
+    """Answers 'harder to reason about failures mid-stream'.
+
+    A process killed mid-stream never calls finalize(), so the file itself must
+    already reveal that it is short.
+    """
+    p = tmp_path / "summary.md"
+    s = SummaryStream(p, expected=40)
+    for i in (1, 2, 3):
+        s.emit(_entry(i))
+    text = p.read_text(encoding="utf-8")
+    assert "3 article tabs summarised." in text, "running count must be truthful"
+    assert recount_entries(p) == 3
+
+
+def test_stream_never_writes_a_torn_entry(tmp_path):
+    """Answers 'partial writes to the summary file are more likely'.
+
+    Every append is whole lines under an exclusive lock.
+    """
+    p = tmp_path / "summary.md"
+    s = SummaryStream(p, expected=5)
+    for i in (1, 2, 3, 4):
+        s.emit(_entry(i))
+    text = p.read_text(encoding="utf-8")
+    assert text.endswith("\n"), "file must not end mid-line"
+    assert recount_entries(p) == 4
+    for i in (1, 2, 3, 4):
+        assert f"## {i}. Article {i}" in text
+
+
+def test_stream_records_append_failure_and_stays_partial(tmp_path):
+    p = tmp_path / "summary.md"
+    s = SummaryStream(p, expected=2)
+    s.emit(_entry(1))
+    with patch.object(sweep_lib, "atomic_append", side_effect=OSError("disk full")):
+        s.emit(_entry(2), url="https://x/2")
+    assert s.emitted == 1 and s.failed and "disk full" in s.failed[0]
+    assert s.finalize()["complete"] is False
+
+
+def test_stream_rejects_non_entry_lines(tmp_path):
+    s = SummaryStream(tmp_path / "s.md", expected=1)
+    with pytest.raises(ValueError):
+        s.emit(["not an entry\n"])
+
+
+def test_stream_appends_to_existing_file_without_clobbering(tmp_path):
+    p = tmp_path / "summary.md"
+    atomic_append(p, ["# Tab sweep summary\n", "\n", "2 article tabs summarised.\n", "\n"])
+    atomic_append(p, ["## old. Kept\n", "x\n", "\n"])
+    s = SummaryStream(p, expected=1)
+    s.emit(_entry(9))
+    m = s.finalize()
+    text = p.read_text(encoding="utf-8")
+    assert "## old. Kept" in text and "## 9. Article 9" in text
+    assert m["emitted"] == 2
+
+
+def test_stream_finalize_is_idempotent(tmp_path):
+    p = tmp_path / "summary.md"
+    s = SummaryStream(p, expected=1)
+    s.emit(_entry(1))
+    s.finalize()
+    SummaryStream(p, expected=1).finalize()
+    text = p.read_text(encoding="utf-8")
+    assert text.count("sweep-stream:") == 1, "must not stack trailers"
+
+
+def test_stream_header_declares_intent_before_any_entry(tmp_path):
+    """Found by mutation testing: the initial header was unpinned.
+
+    If the process dies between opening the stream and the first emit, the
+    running recount never fires. The file must still say what the run set out
+    to produce, or a crash in that window looks like an empty sweep rather than
+    a lost one.
+    """
+    p = tmp_path / "summary.md"
+    SummaryStream(p, expected=40)
+    assert "40 article tabs summarised." in p.read_text(encoding="utf-8")

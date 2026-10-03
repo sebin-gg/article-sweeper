@@ -4,7 +4,7 @@ description: Summarize open article tabs in Thorium, Chromium, Chrome, Brave, Ed
 license: MIT
 allowed-tools: Bash Read Edit Write Task WebFetch WebSearch
 metadata:
-  version: "1.6.0"
+  version: "1.7.0"
   tags: "browser,tabs,summarize,thorium,chromium,firefox"
 ---
 
@@ -270,6 +270,41 @@ request. Refinement is deliberately one-directional: it may only promote
 `unsure` → `article`, never touches `leave-open`, and never demotes. A web
 inbox is dense with text, so anything able to promote `leave-open` would close
 the busiest dashboard in the sweep instead.
+
+Fetch with retry, and stream the summary:
+
+```bash
+python3 scripts/fetch_articles.py --concurrency 20 --per-domain 2 --with-text \
+  --max-attempts 3 < "$SCRATCH/urls.txt" > "$SCRATCH/fetched.jsonl"
+```
+
+`--max-attempts 3` retries what is worth retrying — `429`, `5xx` and transport
+errors — with exponential backoff and jitter, and honours `Retry-After`. Jitter
+is the load-bearing part: without it, five Medium tabs retry in lockstep and
+re-create the stampede that earned the 429. A `403` is a refusal, not a
+glitch, and is never retried. Every result reports `attempts`, so a summary can
+say "rate limited" instead of "fetch failed".
+
+Do not batch the summaries. Write them as they finish:
+
+```python
+from sweep_lib import SummaryStream
+
+stream = SummaryStream(summary_path, expected=len(pending))
+for article in as_completed(pending):          # completion order, not list order
+    stream.emit(render_entry(article), url=article["url"])
+manifest = stream.finalize()
+if not manifest["complete"]:
+    print("short run — re-summarize:", manifest["emitted"], "of", manifest["expected"])
+```
+
+Each `emit()` is a locked, fsynced append of complete lines, so a crash leaves
+whole entries rather than a torn one, and the header count is reconciled as you
+go. A killed run therefore leaves a file that is visibly short rather than
+quietly incomplete. **Check `manifest["complete"]` before closing anything** —
+that is the signal that every tab you are about to close actually has a summary.
+Ordering is completion order, so read the manifest rather than assuming source
+order. Closing stays a single audited step at the end, not per-batch.
 
 ```bash
 python3 - <<'EOF' > "$SCRATCH/urls.txt"
