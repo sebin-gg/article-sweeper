@@ -46,6 +46,7 @@ from sweep_lib import (  # noqa: E402
     endpoint_gone_confirmed,
     last_page_guard,
     parse_cdp_list,
+    parse_summary_file,
     redact_url,
     validate_host,
     validate_port,
@@ -134,6 +135,9 @@ def main(argv=None):
     ap.add_argument("ids_file")
     ap.add_argument("--port", default="9222")
     ap.add_argument("--host", default=DEFAULT_HOST)
+    ap.add_argument("--summary", default="", required=True,
+                    help="summary file; a tab closes ONLY if its canonical "
+                         "URL has a schema-valid entry here")
     ap.add_argument("--expect", default="", required=True,
                     help="REQUIRED: CDP /json/list dump for pre-close revalidation")
     ap.add_argument("--browser", default="", required=True,
@@ -216,6 +220,19 @@ def main(argv=None):
                               browser=args.browser)
     except Exception as exc:
         raise SystemExit(f"cannot revalidate before close: {exc}")
+    # Close gate: an entry must EXIST in the summary file and be
+    # schema-valid. Without this, "closed but never summarized" is prevented
+    # only by the agent's discipline; with it, the summary file is the
+    # authorization record and the run audits itself -- every close is backed
+    # by an entry, and every entry is one you can read.
+    sindex, sproblems = parse_summary_file(Path(args.summary))
+    for prob in sproblems:
+        print(f"SUMMARY-PROBLEM {prob}", file=sys.stderr)
+    if not sindex:
+        raise SystemExit(
+            "refusing close: summary file has no schema-valid entries "
+            f"({len(sproblems)} problem(s)); see SUMMARY-PROBLEM above")
+
     cand_by_id = {t.id: t for t in before}
     missing = [i for i in ids if i not in cand_by_id]
     if missing:
@@ -229,6 +246,22 @@ def main(argv=None):
     if len(safe) != len(candidates):
         print(f"revalidation skipped {len(candidates) - len(safe)}/"
               f"{len(candidates)}", file=sys.stderr)
+    # Apply the summary gate per tab. A tab whose canonical URL has no
+    # schema-valid entry is not closable, no matter how it got into the close
+    # set. Matching is on the canonical URL, so a Link: written in a cleaner
+    # form than the tab's own URL still matches.
+    unsummarized = [t for t in safe if t.canonical not in sindex]
+    for t in unsummarized:
+        print(f"SKIP {t.id}: no schema-valid summary entry for "
+              f"{redact_url(t.url)}")
+    if unsummarized:
+        print(f"summary gate skipped {len(unsummarized)}/{len(candidates)}",
+              file=sys.stderr)
+    safe = [t for t in safe if t.canonical in sindex]
+    if not safe:
+        print("nothing safe to close: no schema-valid summary entry matches "
+              "the requested tabs", file=sys.stderr)
+        sys.exit(0)
     ids = [t.id for t in safe]
     if not ids:
         print("nothing safe to close after revalidation", file=sys.stderr)

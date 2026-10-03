@@ -4,7 +4,7 @@ description: Summarize open article tabs in Thorium, Chromium, Chrome, Brave, Ed
 license: MIT
 allowed-tools: Bash Read Edit Write Task WebFetch WebSearch
 metadata:
-  version: "1.8.0"
+  version: "1.9.0"
   tags: "browser,tabs,summarize,thorium,chromium,firefox"
 ---
 
@@ -53,7 +53,7 @@ scratch costs most of the setup time, so use these:
 |---|---|---|
 | `scripts/sweep_lib.py` | Deterministic core: URL normalize/dedupe, typed classifier, paywall policy, CDP validation, close revalidation, endpoint identity, atomic append, redaction | import it — never reimplement its rules in prose |
 | `scripts/list_cdp_tabs.py` | List live tabs from a CDP endpoint as JSON | §2 enumerate Chromium-family tabs |
-| `scripts/cdp_close.py` | Close tabs, revalidating endpoint+browser identity and the last-page guard | §6 close summarized tabs |
+| `scripts/cdp_close.py` | Close tabs: summary-entry gate, endpoint+browser identity, close-time revalidation, last-page guard | §6 close summarized tabs |
 | `scripts/decode_firefox_session.py` | Decode a Firefox session copy (`mozLz4`) into tabs | §2 Firefox fallback (needs `lz4`) |
 | `scripts/fetch_articles.py` | Fetch article bodies concurrently (20 wide, 2 per host), returning per-URL outcome plus `--with-text` density signals | §4 parallel fetch + content refinement |
 
@@ -494,7 +494,7 @@ path, no unattested endpoint):
 curl -s http://127.0.0.1:<port>/json/list > $SCRATCH/cdp-before.json
 python3 scripts/cdp_close.py ids.txt --host 127.0.0.1 --port <port> \
   --expect $SCRATCH/cdp-before.json --browser <name> \
-  --endpoint 127.0.0.1:<port>
+  --summary $SCRATCH/summary.md --endpoint 127.0.0.1:<port>
 ```
 
 When this workflow launched the browser itself (Linux/macOS), also pass
@@ -508,6 +508,22 @@ or navigated since approval (canonical-URL comparison), requires the
 endpoint to answer `/json/version` with the `--browser` product match,
 and confirms each target disappeared afterwards — unverifiable closes
 (list unreachable) count as FAILED with non-zero exit.
+
+**`--summary` is required, and it is the close gate.** A tab closes only if
+its exact canonical URL has an entry in the summary file, and that entry is
+schema-valid: a `## ` title, a `Link:` that parses as an http(s) URL, a
+non-empty `Summary:`, a non-empty `Takeaway:`, and a `---` terminator.
+Half-written prose cannot authorize a close, and neither can an entry with
+no `Link:` or a `javascript:` one. Matching is on the canonical URL, so a
+`Link:` written in a cleaner form than the tab's own URL still matches.
+An empty or missing summary refuses the whole run, and every skip is
+reported.
+
+This is the invariant that makes the sweep self-auditing: the summary file
+stops being a report and becomes the authorization record. Every close is
+backed by an entry you can read, so "closed but never summarized" is not
+something to remember — it is structurally impossible. Invalid entries are
+printed as `SUMMARY-PROBLEM` on stderr rather than silently ignored.
 
 **Identity is re-checked again at close time, per tab.** The batch check
 above only covers the instant it ran: with a 20-wide pool on a 50-tab

@@ -900,9 +900,42 @@ def test_diff_uses_fresh_baseline_not_stale_expect():
 
 # --- script CLIs ----------------------------------------------------------------
 
+def write_summary(path, urls):
+    """Summary file whose schema-valid entries authorize exactly `urls`."""
+    body = "".join(
+        f"## Article {u}\nLink: {u}\nSummary: real content.\n"
+        f"Takeaway: something.\n---\n\n" for u in urls)
+    Path(path).write_text(
+        "# Tab sweep summary\n\n0 article tabs summarised.\n\n" + body,
+        encoding="utf-8")
+
+
+def _auto_summary(args):
+    """For cdp_close.py calls with no explicit --summary, authorize the whole
+    --expect snapshot. Mirrors a real sweep: every tab in the snapshot has
+    been summarized. Tests that exercise the gate pass --summary themselves.
+    """
+    if "cdp_close.py" not in str(args) or "--summary" in args:
+        return args
+    try:
+        i = args.index("--expect")
+        dump = json.loads(Path(args[i + 1]).read_text(encoding="utf-8"))
+        urls = [t["url"] for t in dump
+                if isinstance(t, dict) and t.get("type") == "page"
+                and t.get("url")]
+    except Exception:
+        return args
+    if not urls:
+        return args
+    s = Path(args[i + 1]).with_name("auto-summary.md")
+    write_summary(s, urls)
+    return list(args) + ["--summary", str(s)]
+
+
 def run(script, *args):
-    return subprocess.run([PY, str(SCRIPTS / script), *args],
-                          capture_output=True, text=True, timeout=60)
+    argv = [PY, str(SCRIPTS / script), *args]
+    argv = _auto_summary(argv)
+    return subprocess.run(argv, capture_output=True, text=True, timeout=60)
 
 
 def test_list_cli_rejects_malformed(tmp_path):
@@ -925,24 +958,33 @@ def test_list_cli_ok_and_redact(tmp_path):
     assert "TOTAL PAGES: 1" in r.stderr
 
 
-def test_close_cli_requires_expect_browser_and_validates(tmp_path):
+def test_close_cli_requires_expect_browser_summary_and_validates(tmp_path):
     ids = tmp_path / "ids.txt"
     ids.write_text("A\n", encoding="utf-8")
-    # --expect missing entirely => argparse error, no blind close
-    r = run("cdp_close.py", str(ids), "--port", "99999")
-    assert r.returncode != 0 and "--expect" in (r.stderr + r.stdout)
-    # --browser missing => argparse error, no unattested close
     exp = tmp_path / "exp.json"
     exp.write_text("[]", encoding="utf-8")
-    r = run("cdp_close.py", str(ids), "--expect", str(exp))
+    summ = tmp_path / "s.md"
+    write_summary(summ, ["https://ex.com/a"])
+    # --summary missing => argparse error: the close gate cannot be skipped.
+    r = run("cdp_close.py", str(ids), "--expect", str(exp),
+            "--browser", "chrome")
+    assert r.returncode != 0 and "--summary" in (r.stderr + r.stdout)
+    # --expect missing entirely => argparse error, no blind close
+    r = run("cdp_close.py", str(ids), "--port", "99999", "--summary", str(summ))
+    assert r.returncode != 0 and "--expect" in (r.stderr + r.stdout)
+    # --browser missing => argparse error, no unattested close
+    r = run("cdp_close.py", str(ids), "--expect", str(exp),
+            "--summary", str(summ))
     assert r.returncode != 0 and "--browser" in (r.stderr + r.stdout)
     # --expect present but bad port still rejected
     r = run("cdp_close.py", str(ids), "--port", "99999",
-            "--expect", str(exp), "--browser", "chrome")
+            "--expect", str(exp), "--browser", "chrome",
+            "--summary", str(summ))
     assert r.returncode != 0 and "bad port" in (r.stderr + r.stdout)
     r2 = run("cdp_close.py", str(ids), "--host", "0.0.0.0",
-             "--expect", str(exp), "--browser", "chrome")
-    assert r2.returncode != 0 and "loopback" in (r2.stderr + r2.stdout)
+             "--expect", str(exp), "--browser", "chrome",
+             "--summary", str(summ))
+    assert r2.returncode != 0 and "loopback" in (r2.stderr + r.stdout)
 
 
 def test_list_cli_check_endpoint_needs_browser(tmp_path):
@@ -2064,3 +2106,158 @@ def test_close_reports_gone_target_without_closing(tmp_path):
                 "--browser", "chrome")
         assert cdp.closed_puts == [], "no PUT for a target that is already gone"
         assert "gone before close" in (r.stdout + r.stderr)
+
+
+# --- close gate: an entry must exist in the summary, schema-valid ---------
+
+def _gate_fixture(tmp_path, summary_urls=None, raw=None, *, summarize_all_tabs=True):
+    tabs = {"A": {"id": "A", "type": "page",
+                  "url": "https://ex.com/a", "title": "A"},
+            "B": {"id": "B", "type": "page",
+                  "url": "https://ex.com/b", "title": "B"}}
+    cdp = FakeCDP("Chrome/140.0.0.0", tabs)
+    exp = tmp_path / "expect.json"
+    summ = tmp_path / "summary.md"
+    if raw is not None:
+        summ.write_text(raw, encoding="utf-8")
+    else:
+        write_summary(summ, summary_urls
+                      if summary_urls is not None
+                      else (list(tabs.values()) and ["https://ex.com/a",
+                                                     "https://ex.com/b"]))
+    ids = tmp_path / "ids.txt"
+    ids.write_text("A\n", encoding="utf-8")
+    return cdp, exp, summ, ids
+
+
+def _run_gate(cdp, exp, summ, ids):
+    return run("cdp_close.py", str(ids), "--host", "127.0.0.1",
+               "--port", str(cdp.port), "--expect", str(exp),
+               "--browser", "chrome", "--summary", str(summ))
+
+
+def test_gate_blocks_close_when_no_summary_entry(tmp_path):
+    """The invariant: a tab closes only if its entry exists."""
+    with FakeCDP("Chrome/140.0.0.0", {
+            "A": {"id": "A", "type": "page",
+                  "url": "https://ex.com/a", "title": "A"},
+            "B": {"id": "B", "type": "page",
+                  "url": "https://ex.com/b", "title": "B"}}) as cdp:
+        exp = tmp_path / "expect.json"
+        cdp.dump_list(exp)
+        ids = tmp_path / "ids.txt"
+        ids.write_text("A\n", encoding="utf-8")
+        summ = tmp_path / "summary.md"
+        # Only B was summarized; A is requested for close anyway.
+        write_summary(summ, ["https://ex.com/b"])
+        r = _run_gate(cdp, exp, summ, ids)
+        assert "A" in cdp.tabs, "unsummarized tab must not close"
+        assert cdp.closed_puts == []
+        assert "no schema-valid summary entry" in (r.stdout + r.stderr)
+
+
+def test_gate_allows_close_when_entry_present(tmp_path):
+    with FakeCDP("Chrome/140.0.0.0", {
+            "A": {"id": "A", "type": "page",
+                  "url": "https://ex.com/a", "title": "A"},
+            "B": {"id": "B", "type": "page",
+                  "url": "https://ex.com/b", "title": "B"}}) as cdp:
+        exp = tmp_path / "expect.json"
+        cdp.dump_list(exp)
+        ids = tmp_path / "ids.txt"
+        ids.write_text("A\n", encoding="utf-8")
+        summ = tmp_path / "summary.md"
+        write_summary(summ, ["https://ex.com/a"])
+        r = _run_gate(cdp, exp, summ, ids)
+        assert r.returncode == 0, r.stderr + r.stdout
+        assert "A" not in cdp.tabs and cdp.closed_puts == ["A"]
+        assert "B" in cdp.tabs, "gate must not touch unlisted tabs"
+
+
+@pytest.mark.parametrize("broken,why", [
+    ("## T\nSummary: s\nTakeaway: t\n---\n", "no Link"),
+    ("## T\nLink: https://ex.com/a\nTakeaway: t\n---\n", "no Summary"),
+    ("## T\nLink: https://ex.com/a\nSummary: s\n---\n", "no Takeaway"),
+    ("## T\nLink: https://ex.com/a\nSummary:\nTakeaway: t\n---\n", "empty Summary"),
+    ("## T\nLink: not-a-url\nSummary: s\nTakeaway: t\n---\n", "bad Link"),
+    ("## T\nLink: javascript:alert(1)\nSummary: s\nTakeaway: t\n---\n",
+     "non-http Link"),
+    ("## T\nLink: https://ex.com/a\nSummary: s\nTakeaway: t\n", "no ---"),
+])
+def test_gate_rejects_schema_invalid_entries(tmp_path, broken, why):
+    """Half-written prose must never authorize a destructive action."""
+    with FakeCDP("Chrome/140.0.0.0", {
+            "A": {"id": "A", "type": "page",
+                  "url": "https://ex.com/a", "title": "A"},
+            "B": {"id": "B", "type": "page",
+                  "url": "https://ex.com/b", "title": "B"}}) as cdp:
+        exp = tmp_path / "expect.json"
+        cdp.dump_list(exp)
+        ids = tmp_path / "ids.txt"
+        ids.write_text("A\n", encoding="utf-8")
+        summ = tmp_path / "summary.md"
+        summ.write_text("# Tab sweep summary\n\n" + broken, encoding="utf-8")
+        r = _run_gate(cdp, exp, summ, ids)
+        assert "A" in cdp.tabs, f"{why}: must not close"
+        assert cdp.closed_puts == [], f"{why}: no PUT"
+        assert r.returncode != 0, f"{why}: must fail loudly"
+
+
+def test_gate_matches_canonical_url_not_raw_string(tmp_path):
+    """A cleaner Link: still matches the tab it describes."""
+    with FakeCDP("Chrome/140.0.0.0", {
+            "A": {"id": "A", "type": "page",
+                  "url": "https://ex.com/a?utm_source=x#frag", "title": "A"},
+            "B": {"id": "B", "type": "page",
+                  "url": "https://ex.com/b", "title": "B"}}) as cdp:
+        exp = tmp_path / "expect.json"
+        cdp.dump_list(exp)
+        ids = tmp_path / "ids.txt"
+        ids.write_text("A\n", encoding="utf-8")
+        summ = tmp_path / "summary.md"
+        write_summary(summ, ["https://ex.com/a"])
+        r = _run_gate(cdp, exp, summ, ids)
+        assert r.returncode == 0, r.stderr + r.stdout
+        assert "A" not in cdp.tabs
+
+
+def test_gate_refuses_when_summary_missing(tmp_path):
+    with FakeCDP("Chrome/140.0.0.0", {
+            "A": {"id": "A", "type": "page",
+                  "url": "https://ex.com/a", "title": "A"},
+            "B": {"id": "B", "type": "page",
+                  "url": "https://ex.com/b", "title": "B"}}) as cdp:
+        exp = tmp_path / "expect.json"
+        cdp.dump_list(exp)
+        ids = tmp_path / "ids.txt"
+        ids.write_text("A\n", encoding="utf-8")
+        r = run("cdp_close.py", str(ids), "--host", "127.0.0.1",
+                "--port", str(cdp.port), "--expect", str(exp),
+                "--browser", "chrome",
+                "--summary", str(tmp_path / "nope.md"))
+        assert "A" in cdp.tabs and cdp.closed_puts == []
+        assert "not found" in (r.stdout + r.stderr)
+
+
+def test_gate_accepts_documented_paywall_entry(tmp_path):
+    """The skipped-paywalled form is documented, so it must validate."""
+    body = ("## Some Headline\nLink: https://ex.com/a\n"
+            "Summary: NOT SUMMARIZED — ex.com blocks direct fetch. Title only:\n"
+            "\"Some Headline\". Unverified.\n"
+            "Takeaway: Re-run with `--allow-search-fallback`.\n---\n")
+    ok, probs, link = sweep_lib.validate_summary_entry(body)
+    assert ok, probs
+    assert link == "https://ex.com/a"
+
+
+def test_duplicate_summary_link_is_reported(tmp_path):
+    # Same article written two ways that canonicalize alike (case + default
+    # port + fragment). Note `utm=` would NOT collapse: query params are
+    # significant by design, only known tracking params are dropped.
+    raw = ("## One\nLink: https://ex.com/a\nSummary: s\nTakeaway: t\n---\n\n"
+           "## Two\nLink: HTTPS://EX.COM:443/a#top\nSummary: s\n"
+           "Takeaway: t\n---\n")
+    p = tmp_path / "s.md"
+    p.write_text(raw, encoding="utf-8")
+    index, problems = sweep_lib.parse_summary_file(p)
+    assert len(index) == 1 and any("duplicate" in x for x in problems)

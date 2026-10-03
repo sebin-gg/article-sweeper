@@ -1353,6 +1353,88 @@ def _summary_lock(path: Path):
             _unlock_exclusive(lockfh, backend)
 
 
+SUMMARY_LINK_RE = re.compile(r"^Link:[ \t]*(\S+)[ \t]*$", re.M)
+SUMMARY_SUMMARY_RE = re.compile(r"^Summary:[ \t]*(.*)$", re.M)
+SUMMARY_TAKEAWAY_RE = re.compile(r"^Takeaway:[ \t]*(.*)$", re.M)
+
+# Fields an entry must carry to be allowed to authorize a close.
+SUMMARY_REQUIRED = ("Link", "Summary", "Takeaway")
+
+
+def validate_summary_entry(text: str) -> tuple[bool, list[str], str]:
+    """Validate one summary entry against the documented schema.
+
+    Returns (ok, problems, link). An entry authorizes a close only if it is
+    structurally complete: a `## ` heading, a `Link:` that parses as an
+    http(s) URL, a non-empty `Summary:`, a non-empty `Takeaway:`, and a
+    closing `---`. Half-written prose must not be able to authorize a close.
+    """
+    problems: list[str] = []
+    if not text.lstrip().startswith("## "):
+        problems.append("no '## ' title heading")
+    link = ""
+    m = SUMMARY_LINK_RE.search(text)
+    if not m:
+        problems.append("missing 'Link:'")
+    else:
+        link = m.group(1).strip()
+        try:
+            parsed = urllib.parse.urlparse(link)
+        except ValueError:
+            parsed = None
+        if parsed is None or parsed.scheme not in ("http", "https") \
+                or not parsed.netloc:
+            problems.append(f"Link: is not an http(s) URL ({link[:60]!r})")
+            link = ""
+    for label, rx in (("Summary", SUMMARY_SUMMARY_RE),
+                      ("Takeaway", SUMMARY_TAKEAWAY_RE)):
+        mm = rx.search(text)
+        if not mm:
+            problems.append(f"missing '{label}:'")
+        elif not mm.group(1).strip():
+            problems.append(f"empty '{label}:'")
+    if "---" not in text:
+        problems.append("missing '---' terminator")
+    return (not problems), problems, link
+
+
+def parse_summary_file(path: Path) -> tuple[dict[str, dict], list[str]]:
+    """Parse the summary file into {canonical_url: entry} plus problems.
+
+    Only schema-valid entries land in the index, so membership in the
+    returned dict is itself proof that the entry is complete. Entries are
+    matched on canonical URL, so a `Link:` written in a cleaner form than the
+    tab's own URL still matches -- which is the point of canonicalising both
+    sides rather than comparing strings.
+    """
+    p = Path(path)
+    try:
+        text = p.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}, [f"summary file not found: {p}"]
+    except OSError as exc:
+        return {}, [f"summary file unreadable: {exc}"]
+
+    index: dict[str, dict] = {}
+    problems: list[str] = []
+    # Entries are separated by the '---' terminator; everything before the
+    # first heading is header text.
+    chunks = re.split(r"(?m)^##[ \t]", text)
+    for raw in chunks[1:]:
+        body = "## " + raw
+        ok, probs, link = validate_summary_entry(body)
+        title = body.splitlines()[0][3:].strip() if body.splitlines() else ""
+        if not ok:
+            problems.append(f"{title or '(untitled)'}: " + "; ".join(probs))
+            continue
+        canon = canonicalize_url(link)
+        if canon in index:
+            problems.append(f"{title}: duplicate Link ({canon[:60]})")
+            continue
+        index[canon] = {"title": title, "link": link, "canonical": canon}
+    return index, problems
+
+
 def atomic_append(path: Path, lines: list[str]) -> None:
     """Append lines atomically: write-temp-in-same-dir + os.replace for the
     header-create step, then append under an exclusive sidecar lock so

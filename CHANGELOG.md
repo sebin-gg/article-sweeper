@@ -22,6 +22,49 @@ Tests:
   message alongside otherwise-parseable output. Verified it fails against the
   previous behaviour.
 
+## [1.9.0] - 2026-10-03
+
+The summary file becomes the close gate, so the run audits itself.
+
+Added:
+
+- **`--summary` is now required by `cdp_close.py`.** A tab closes only if its
+  canonical URL has an entry in the summary file *and* that entry is
+  schema-valid: `## ` title, a `Link:` parsing as an http(s) URL, non-empty
+  `Summary:`, non-empty `Takeaway:`, and a `---` terminator.
+- New `sweep_lib.validate_summary_entry()` and `parse_summary_file()`. Only
+  valid entries enter the index, so membership is itself proof of
+  completeness.
+- Matching is on the canonical URL, so a `Link:` written in a cleaner form than
+  the tab's own URL (`HTTPS://EX.COM:443/a#top`) still authorizes it.
+- An empty or missing summary refuses the whole run; invalid entries are
+  printed as `SUMMARY-PROBLEM` rather than silently dropped.
+
+Why:
+
+- Previously nothing tied the close set to the summary. "Closed but never
+  summarized" was prevented only by the agent remembering to check, which is
+  exactly the kind of discipline a destructive action must not depend on.
+- With the gate, every close is backed by an entry you can read, and the
+  summary stops being a report and becomes the authorization record. One
+  invariant, and the whole run is auditable after the fact.
+- Schema validation matters because a truncated or half-written entry is
+  precisely what a crash mid-stream leaves behind; `SummaryStream` already
+  makes such files visible, and this makes them inert.
+
+Tests:
+
+- 13 new tests, 198 pass, mutation-tested. Removing schema validation fails 9;
+  removing the gate itself fails 9. Seven parametrized cases pin the schema
+  rules, including a `javascript:` Link, which must never authorize a close.
+- One test asserts the documented `skipped-paywalled` entry shape still
+  validates, so tightening the schema cannot silently outlaw a format the
+  skill tells the agent to produce.
+- A wrong assumption of mine surfaced here: I assumed `?utm=1` would collapse
+  to the bare URL in a duplicate check. It does not, by design -- query params
+  are significant and only known tracking params are dropped. The code was
+  right; the test now uses a genuine canonicalization.
+
 ## [1.8.0] - 2026-10-03
 
 Close tabs only if they are still the tabs you approved.
