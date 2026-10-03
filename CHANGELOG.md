@@ -22,6 +22,46 @@ Tests:
   message alongside otherwise-parseable output. Verified it fails against the
   previous behaviour.
 
+## [1.5.0] - 2026-10-03
+
+Addresses customer feedback 3-6.
+
+Added:
+
+- **Typed classifier gate** (`sweep_lib.classify_tabs_typed`). One pass, no
+  prose, no output tokens: every tab returns `article`, `leave-open`, or
+  `duplicate-of:<url>`. Only surviving `article` entries reach the expensive
+  summarizer. Duplicates point at the keeper so every id in the group still
+  closes together; near-duplicates the canonicalizer does not merge (AMP,
+  share tokens, author subdomains) stay separate decisions for judgment.
+- **`scripts/fetch_articles.py`** — concurrent body fetch, default 20 at a time
+  (the `xargs -P 20` shape), streaming one typed JSON outcome per URL so
+  blocked hosts route without re-inspecting anything. Fetches start as soon as
+  the typed gate emits URLs and overlap with the rest of classification instead
+  of starting after it.
+- **Script inventory** at the top of SKILL.md. Every helper is already shipped;
+  the feedback reported writing `list_cdp_tabs.py`, `cdp_close.py` and a
+  Firefox session decoder from scratch, which cost most of the setup time. The
+  scripts existed but were only referenced inline mid-workflow.
+- **Paywall policy** (`sweep_lib.plan_fetch`, `is_paywalled`,
+  `is_blocked_status`). Paywalled domains skip the search fallback **by
+  default** and get an honest title+domain entry instead;
+  `--allow-search-fallback` opts back in. A 401/402/403/451 sets
+  `needs_search` so those route in parallel rather than queueing behind the rest.
+
+Fixed:
+
+- `fetch_one` no longer aborts a whole run on one unparseable URL:
+  `urllib.request.Request()` raises `ValueError` at construction, which sat
+  outside the try block, so a single junk input line lost every other result.
+
+Tests:
+
+- 34 new tests: typed decisions, duplicate collapsing, significant-query
+  preservation, user-named override, paywall detection, default-vs-opt-in fetch
+  planning, blocked-status handling, malformed URLs, and the fetcher CLI.
+- `lint` job now compiles `fetch_articles.py` too.
+
 ## [1.4.0] - 2026-10-02
 
 Added:

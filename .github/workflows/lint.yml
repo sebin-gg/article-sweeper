@@ -44,7 +44,8 @@ jobs:
           for script in ("scripts/sweep_lib.py",
                           "scripts/list_cdp_tabs.py",
                           "scripts/cdp_close.py",
-                          "scripts/decode_firefox_session.py"):
+                          "scripts/decode_firefox_session.py",
+                          "scripts/fetch_articles.py"):
               compile((root / script).read_text(encoding="utf-8"), script, "exec")
           version = re.search(r"^\s*version:\s*[\"']?([^\s\"']+)",
                               frontmatter, re.M).group(1)
