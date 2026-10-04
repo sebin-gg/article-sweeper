@@ -4,7 +4,7 @@ description: Summarize open article tabs in Thorium, Chromium, Chrome, Brave, Ed
 license: MIT
 allowed-tools: Bash Read Edit Write Task WebFetch WebSearch
 metadata:
-  version: "1.17.0"
+  version: "1.18.0"
   tags: "browser,tabs,summarize,thorium,chromium,firefox"
 ---
 
@@ -530,6 +530,25 @@ Protected / left open (non-articles, not summarised):
    `sweep_lib.recount_and_fix_header()` recounts the `## ` entries and
    rewrites the header count line to the true count; verify with
    `grep -c '^## ' <file>`.
+
+## 5b. Wait for the tab set to settle
+
+Session restore re-creates tabs asynchronously. Enumerating during that window
+gives you a **stable but wrong** baseline — worse than a noisy one, because
+every later comparison then looks broken. Ask for the settled list:
+
+```bash
+python3 scripts/list_cdp_tabs.py --wait-stable --host 127.0.0.1 --port <port> \
+  --browser <name> > $SCRATCH/cdp-before.json
+```
+
+It polls until the tab **set** (not merely the count — one tab can close while
+another opens and the count never moves) is unchanged for `--settle` seconds.
+Below 8 tabs it uses a shorter 0.5s window, since a four-tab session is not
+restoring. `--wait-timeout` bounds the wait at 20s.
+
+If it prints `stable=False`, the set never settled: re-run, or accept knowingly
+and say so. It still prints the best snapshot it has rather than aborting.
 
 ## 6. Close only summarized tabs
 

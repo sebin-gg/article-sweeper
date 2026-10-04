@@ -50,7 +50,47 @@ Tests:
   message alongside otherwise-parseable output. Verified it fails against the
   previous behaviour.
 
-## [1.17.0] - 2026-10-04
+## [1.18.0] - 2026-10-04
+
+Stability window: enumerate only once the tab set stops changing.
+
+Added:
+
+- `sweep_lib.wait_for_stable_tabs(fetch, ...)` polls until the tab set is
+  unchanged, then returns records plus an info dict (`stable`, `waited`,
+  `samples`, `changes`, `timed_out`, `reason`). Session restore re-creates tabs
+  asynchronously; enumerating during that window captures a **stable but wrong**
+  baseline, which is worse than a noisy one because every later comparison then
+  looks broken.
+- `list_cdp_tabs.py --wait-stable` fetches live until it settles. With
+  `--settle` / `--wait-timeout` overrides. It prints the wait on stderr and
+  warns loudly when the set never settled.
+
+Design decisions:
+
+- **Stability is the id SET, not the count.** One tab can close while another
+  opens and the count never moves while the set is completely different. This
+  is the gap that made a count-only check worthless.
+- **Threshold-gated.** Below 8 tabs (`STABLE_MIN_TABS`) the short 0.5s window
+  is used, because a four-tab session is not re-creating tabs and there is no
+  reason to tax every sweep two seconds.
+- **Bounded.** `STABLE_TIMEOUT_SECONDS` (20s) caps the wait, so a genuinely
+  churning session cannot hang the sweep. On timeout the last good snapshot is
+  returned with `stable: False` -- a moving target is a reason to warn, not to
+  abort. A transient fetch failure is likewise survivable.
+- Virtual-clock injectable (`sleep=`, `time.monotonic`) so the settle windows
+  are tested deterministically rather than by sleeping.
+
+Also fixed here: `info["changes"]` counted the first observation as a change,
+so a perfectly settled pile reported one change. The baseline is not a change.
+
+Tests:
+
+- 411 pass (was 399). 12 new, on a virtual clock so nothing is timing-flaky.
+- Three mutants, all caught: stability by count only, no waiting at all, and
+  the threshold gate removed.
+
+
 
 A tab mid-navigation no longer reports clean.
 

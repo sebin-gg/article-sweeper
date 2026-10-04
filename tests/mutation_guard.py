@@ -125,6 +125,32 @@ MUTANTS = [
         None,
     ),
     (
+        # Stability by count alone: one tab can close while another opens and
+        # the count never moves, which is the gap the id-set check closes.
+        "stability-uses-count-only",
+        SWEEP,
+        "    return len(raw or []), frozenset(ids)",
+        "    return len(raw or []), frozenset()",
+        "stability",
+        None,
+    ),
+    (
+        "stability-waits-not-at-all",
+        SWEEP,
+        "            if (now - unchanged_since) >= want:",
+        "            if True:",
+        "stability",
+        None,
+    ),
+    (
+        "stability-threshold-gate-removed",
+        SWEEP,
+        "        want = settle_seconds if sig[0] >= min_tabs else settle_small",
+        "        want = settle_seconds",
+        "stability",
+        None,
+    ),
+    (
         "form-guard-skipped-entirely",
         CLOSE,
         "    if not args.no_form_guard:",
