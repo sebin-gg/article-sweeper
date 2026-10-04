@@ -165,3 +165,75 @@ def test_no_ws_url_message_names_the_flag(bad):
     assert dirty is True
     assert "--no-form-guard" in why, f"message must name the opt-out: {why!r}"
     assert "no-websocket-url" in why
+
+
+# --- a just-committed document must not be reported clean ------------------
+#
+# readyState only catches a half-parsed DOM. A page that has just committed can
+# already read "interactive"/"complete" while client-side code is still
+# injecting its form, so the field scan finds nothing on a page that is about
+# to present one.
+
+
+def _aged(age_ms, state="complete", dirty=False):
+    return lambda msg: {"id": msg.get("id"), "result": {"result": {"value": {
+        "dirty": dirty, "fields": ["input.text"] if dirty else [],
+        "readyState": state, "ageMs": age_ms}}}}
+
+
+def test_just_committed_document_is_not_reported_clean():
+    with FakeWS(_aged(300, state="interactive")) as s:
+        dirty, why = cdp_forms.probe_dirty_form(s.url, timeout=5)
+    assert dirty is True, (
+        "readyState was already interactive, but the form may not exist yet")
+    assert "just-navigated" in why
+
+
+@pytest.mark.parametrize("age", [0, 400, 1199])
+def test_documents_younger_than_the_floor_are_refused(age):
+    with FakeWS(_aged(age)) as s:
+        dirty, _ = cdp_forms.probe_dirty_form(s.url, timeout=5)
+    assert dirty is True
+
+
+@pytest.mark.parametrize("age", [1200, 5000, 600_000])
+def test_settled_documents_are_scanned_normally(age):
+    with FakeWS(_aged(age)) as s:
+        dirty, _ = cdp_forms.probe_dirty_form(s.url, timeout=5)
+    assert dirty is False, f"a {age}ms-old document must not be refused"
+
+
+def test_settled_page_with_input_still_detected():
+    with FakeWS(_aged(9000, dirty=True)) as s:
+        dirty, why = cdp_forms.probe_dirty_form(s.url, timeout=5)
+    assert dirty is True and "unsaved-input" in why
+
+
+def test_young_document_with_input_reports_the_young_reason():
+    """Either verdict skips the close, but the reason must not mislead."""
+    with FakeWS(_aged(200, dirty=True)) as s:
+        dirty, why = cdp_forms.probe_dirty_form(s.url, timeout=5)
+    assert dirty is True and "just-navigated" in why
+
+
+def test_missing_age_falls_back_to_the_ready_state_check_only():
+    """An absent timeOrigin must not silently pass the young-document test."""
+    with FakeWS(lambda m: {"id": m.get("id"), "result": {"result": {"value": {
+            "dirty": False, "fields": [], "readyState": "complete"}}}}) as s:
+        dirty, _ = cdp_forms.probe_dirty_form(s.url, timeout=5)
+    assert dirty is False, "a complete reply with no age is still usable"
+
+
+def test_probe_expression_reads_the_time_origin():
+    """Pin the code, not the word: the expression must actually read it."""
+    with FakeWS(_aged(9000)) as s:
+        cdp_forms.probe_dirty_form(s.url, timeout=5)
+    expr = s.received[0]["params"]["expression"]
+    assert "performance.timeOrigin" in expr
+    assert "ageMs: age" in expr
+
+
+def test_floor_is_a_named_constant():
+    assert 0 < cdp_forms.MIN_DOCUMENT_AGE_MS <= 5000, (
+        "the floor must be short enough not to block ordinary tabs, and long "
+        "enough to cover client-side form rendering")

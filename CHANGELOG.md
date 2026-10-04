@@ -50,7 +50,50 @@ Tests:
   message alongside otherwise-parseable output. Verified it fails against the
   previous behaviour.
 
-## [1.16.0] - 2026-10-04
+## [1.17.0] - 2026-10-04
+
+A tab mid-navigation no longer reports clean.
+
+Fixed:
+
+- The 1.14.1 fix caught `readyState === 'loading'`, but that only covers a
+  half-parsed DOM. A document that has **just committed** can already read
+  `interactive`/`complete` while client-side code is still injecting its form,
+  so the field scan finds nothing on a page that is about to present one.
+- The probe now reports the document's age (`performance.timeOrigin`) and
+  refuses to conclude "clean" below `MIN_DOCUMENT_AGE_MS` (1200ms), reporting
+  `page-just-navigated`. Nobody has typed meaningful input in well under a
+  second, so the cost of refusing is negligible.
+
+Verified on a real browser against a page that injects its input 2000ms after
+commit — the case a fake server structurally cannot reproduce:
+
+```
+t+0.2s (before the form exists) -> page-just-navigated (214ms old)
+t+0.8s (still before)           -> page-just-navigated (816ms old)
+t+2.6s (form now present)       -> unsaved-input:input.text
+t+5.0s (settled)                -> unsaved-input:input.text
+```
+
+At t+0.8s the previous behaviour was `clean (readyState=complete)`, on a page
+that presented a form 1.2s later.
+
+Scope note: the *in-flight* case, where a navigation has not yet committed, is
+already covered by ordering -- `close_one()` revalidates id + canonical URL
+after the batch probe, so a navigation that commits in between is caught there.
+
+Tests:
+
+- 399 pass (was 388). 11 new, covering the floor boundary (0/1199/1200/5000ms),
+  a settled page with input, the precedence rule that a young page with input
+  reports the young reason, and a page with no `timeOrigin` at all.
+- The expression test pins `performance.timeOrigin` and `ageMs: age` rather
+  than the bare word, so deleting the property is caught -- the same mistake
+  as the `readyState` one, which survived a substring check until pinned.
+- Two new mutants: accepting a just-committed DOM, and the JS stopping to
+  report the age. Both caught; 16 mutants total.
+
+
 
 Classification rules become a readable, diffable file.
 
