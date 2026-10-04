@@ -92,6 +92,25 @@ Tests:
 - New mutant in `mutation_guard.py`: accepting a half-parsed DOM. 12 mutants
   total, all caught.
 
+Also found while verifying this, and fixed in the same PR:
+
+- **A leftover mutant had silently disabled the dirty-form guard.**
+  `cdp_close.py` in the working tree had `if not args.no_form_guard:` rewritten
+  to `if False:`. `main` was never affected -- the change was uncommitted -- but
+  three tests failed for reasons unrelated to the page-loading fix, and the
+  first instinct would have been to blame them.
+- Cause: `mutation_guard.py` applies mutants to real source files. A run
+  killed by a harness timeout skips `finally`, leaving production code
+  mutated. That is the tool I wrote to protect the code, breaking it.
+- Fixed at three levels: restoration is now **verified** after every mutant
+  rather than assumed; the run refuses to start if the tree is already modified
+  and names it as likely leftover; and a final sweep fails loudly if anything
+  is left mutated.
+- `test_form_guard_is_not_disabled_in_the_close_path` pins the source-level
+  property, so a disabled guard cannot ship quietly. Replaying the exact
+  leftover mutant fails it.
+- 368 tests (was 366).
+
 
 
 Search-source recording, with enforcement rather than decoration.
