@@ -4,7 +4,7 @@ description: Summarize open article tabs in Thorium, Chromium, Chrome, Brave, Ed
 license: MIT
 allowed-tools: Bash Read Edit Write Task WebFetch WebSearch
 metadata:
-  version: "1.13.0"
+  version: "1.14.0"
   tags: "browser,tabs,summarize,thorium,chromium,firefox"
 ---
 
@@ -324,17 +324,24 @@ host's throttle into a local slowdown instead of a sweep-wide one.
 Do not batch the summaries. Write them as they finish:
 
 ```python
-from sweep_lib import SummaryStream
+from sweep_lib import SOURCE_FETCH, SOURCE_SEARCH, SearchRecorder, SummaryStream
+from sweep_lib import search_queue
 
 stream = SummaryStream(summary_path, expected=len(pending),
                        index_path=summary_path.with_suffix(".json"))
+recorder = SearchRecorder()          # record search reads as they happen
 for article in as_completed(pending):          # completion order, not list order
     stream.emit(render_entry(article), url=article["url"],
                 title=article["title"], tab_ids=article["tab_ids"],
                 tab_index=article["tab_index"],
                 source=article["source"],                   # fetch|search|paywalled
-                sources_consulted=article.get("consulted", []))
+                sources_consulted=recorder.consulted(article["url"]))
 manifest = stream.finalize()
+
+# Any URL the fetcher routed to search must appear in the index as source=search
+# with the sources actually read. One that does not is unverifiable:
+unrecorded = recorder.finalize(search_queue(fetch_results))
+assert not unrecorded, f"search-derived summaries with no sources: {unrecorded}"
 if not manifest["complete"]:
     print("short run — re-summarize:", manifest["emitted"], "of", manifest["expected"])
 ```

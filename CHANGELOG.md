@@ -50,7 +50,44 @@ Tests:
   message alongside otherwise-parseable output. Verified it fails against the
   previous behaviour.
 
-## [1.13.0] - 2026-10-04
+## [1.14.0] - 2026-10-04
+
+Search-source recording, with enforcement rather than decoration.
+
+The `sources_consulted` field added in 1.13.0 was a field nothing populated.
+This PR makes it real, and makes lying about it fail the run.
+
+Added:
+
+- `validate_provenance()` -- an index record claiming `source: search` with no
+  consulted sources is **rejected**, as is a `fetch` record that lists them
+  (mixed provenance means the record is wrong, not merely incomplete), and any
+  consulted source that is not an http(s) URL. An unverifiable summary that
+  looks audited is worse than no record at all, so the record is kept, marked,
+  and the run is failed.
+- **`SummaryStream` refuses to report `complete: true` when any record has a
+  provenance problem.** `index.json` carries a `provenance_problems` list and
+  each offending entry is annotated, so the problem stays visible instead of
+  being dropped.
+- `SearchRecorder` -- searches are run by subagents, so the URLs read are known
+  only at read time; recording them by hand at summary time is exactly the
+  discipline that quietly lapses. Matches URLs canonically, so recording
+  against a tracking-decorated URL still finds the right bucket, and
+  `finalize(searched_urls)` returns the searched URLs that recorded nothing.
+- `search_queue()` -- the URLs a fetch run handed to search rather than reading.
+  These produced no body of their own, so a summary for one MUST be filed as
+  search-derived; returning them explicitly is what stops a title-derived entry
+  being filed as `source=fetch`.
+
+Tests:
+
+- 359 pass (was 342). 17 new, including the rule that matters: a
+  `source=search` entry with nothing consulted cannot produce a complete run.
+- Four new mutants, all caught: provenance never validated (back to pure
+  decoration), search not requiring sources, problems recorded but the run
+  still reporting complete, and mixed provenance accepted.
+
+
 
 Companion index.json: machine-readable provenance for every entry.
 

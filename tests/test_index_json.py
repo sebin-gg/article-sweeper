@@ -8,7 +8,13 @@ import pytest
 SCRIPTS = Path(__file__).resolve().parents[1] / "article-sweeper" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from sweep_lib import SummaryStream, parse_summary_file  # noqa: E402
+from sweep_lib import (  # noqa: E402
+    SearchRecorder,
+    SummaryStream,
+    parse_summary_file,
+    search_queue,
+    validate_provenance,
+)
 
 
 def _entry(title, link):
@@ -145,3 +151,104 @@ def test_emit_without_metadata_still_works(tmp_path):
     doc = json.loads((tmp_path / "index.json").read_text())
     assert doc["entries"][0]["title"] == "Legacy"
     assert doc["entries"][0]["tab_ids"] == []
+
+
+# --- search-source provenance: recorded, and enforced ----------------------
+
+def _e(title, link):
+    return [f"## {title}\n", f"Link: {link}\n", "Summary: body.\n",
+            "Takeaway: point.\n", "---\n", "\n"]
+
+
+def test_search_entry_without_sources_cannot_be_complete(tmp_path):
+    """The integrity rule: an unauditable summary must not pass as audited."""
+    s = SummaryStream(tmp_path / "summary.md", expected=1,
+                      index_path=tmp_path / "index.json")
+    s.emit(_e("Paywalled", "https://pay.example/x"), source="search")
+    manifest = s.finalize()
+    assert manifest["complete"] is False, (
+        "source=search with nothing consulted is unverifiable")
+    assert any("unverifiable" in q or "no sources_consulted" in q
+               for q in manifest["provenance_problems"])
+
+
+def test_search_entry_with_sources_is_complete(tmp_path):
+    s = SummaryStream(tmp_path / "summary.md", expected=1,
+                      index_path=tmp_path / "index.json")
+    s.emit(_e("Paywalled", "https://pay.example/x"), source="search",
+           sources_consulted=["https://result.example/a"])
+    manifest = s.finalize()
+    assert manifest["complete"] is True
+    assert manifest["provenance_problems"] == []
+
+
+def test_provenance_problem_is_recorded_but_entry_kept(tmp_path):
+    """Dropping the entry would hide the problem instead of surfacing it."""
+    s = SummaryStream(tmp_path / "summary.md", expected=1,
+                      index_path=tmp_path / "index.json")
+    s.emit(_e("Paywalled", "https://pay.example/x"), source="search")
+    s.finalize()
+    doc = json.loads((tmp_path / "index.json").read_text())
+    assert len(doc["entries"]) == 1
+    assert doc["entries"][0]["provenance_problems"]
+    assert doc["provenance_problems"], "index must carry the problem list too"
+
+
+def test_fetch_entry_claiming_search_sources_is_rejected(tmp_path):
+    """Mixed provenance means the record is wrong, not merely incomplete."""
+    s = SummaryStream(tmp_path / "summary.md", expected=1,
+                      index_path=tmp_path / "index.json")
+    s.emit(_e("Plain", "https://a.example/1"), source="fetch",
+           sources_consulted=["https://result.example/a"])
+    assert s.finalize()["complete"] is False
+
+
+@pytest.mark.parametrize("src", ["bogus", "", "FETCH", None])
+def test_unknown_source_is_rejected(tmp_path, src):
+    ok, probs = validate_provenance({"source": src, "sources_consulted": []})
+    assert not ok
+
+
+@pytest.mark.parametrize("bad", ["not-a-url", "javascript:alert(1)", "", "file:///x"])
+def test_non_http_consulted_source_is_rejected(tmp_path, bad):
+    ok, _ = validate_provenance({"source": "search", "sources_consulted": [bad]})
+    assert not ok, f"{bad!r} is not a checkable provenance claim"
+
+
+def test_recorder_associates_sources_with_the_right_url():
+    rec = SearchRecorder()
+    rec.record("https://pay.example/a", "https://r.example/1")
+    rec.record("https://pay.example/b", "https://r.example/2")
+    assert rec.consulted("https://pay.example/a") == ["https://r.example/1"]
+    assert rec.consulted("https://pay.example/b") == ["https://r.example/2"]
+    assert rec.consulted("https://pay.example/c") == []
+
+
+def test_recorder_matches_canonically():
+    rec = SearchRecorder()
+    rec.record("https://pay.example/a?utm_source=x#f", "https://r.example/1")
+    assert rec.consulted("https://pay.example/a") == ["https://r.example/1"]
+
+
+def test_recorder_deduplicates_repeat_reads():
+    rec = SearchRecorder()
+    rec.record("https://pay.example/a", "https://r.example/1")
+    rec.record("https://pay.example/a", "https://r.example/1", "https://r.example/2")
+    assert rec.consulted("https://pay.example/a") == [
+        "https://r.example/1", "https://r.example/2"]
+
+
+def test_recorder_finalize_flags_unrecorded_searches():
+    rec = SearchRecorder()
+    rec.record("https://pay.example/a", "https://r.example/1")
+    missing = rec.finalize(["https://pay.example/a", "https://pay.example/b"])
+    assert missing == ["https://pay.example/b"]
+
+
+def test_search_queue_returns_only_urls_needing_search():
+    rows = [{"url": "https://a.example/1", "needs_search": True},
+            {"url": "https://b.example/2", "needs_search": False},
+            {"url": "https://c.example/3", "needs_search": True},
+            {"url": "", "needs_search": True},
+            "not-a-dict"]
+    assert search_queue(rows) == ["https://a.example/1", "https://c.example/3"]
