@@ -67,6 +67,22 @@ jobs:
       - name: Behavioral tests (mocked CDP / Firefox fixtures)
         run: python -m pytest tests/ -q
 
+  mutation-guard:
+    # Proves the safety tests can still FAIL. One-off mutation testing is only
+    # true on the day it is run; re-running the mutants here means a test that
+    # silently stops discriminating (an edited helper making its assertions
+    # vacuous) breaks the build instead of the guarantee.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - name: Install test deps (hash-locked)
+        run: "pip install --only-binary=:all: --require-hashes -r requirements-ci.txt"
+      - name: Every mutant must be caught
+        run: python tests/mutation_guard.py --keep-going
+
   test-macos:
     runs-on: macos-latest
     steps:

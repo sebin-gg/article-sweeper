@@ -50,6 +50,42 @@ Tests:
   message alongside otherwise-parseable output. Verified it fails against the
   previous behaviour.
 
+## [1.11.1] - 2026-10-04
+
+Make the safety guarantees outlive the person who wrote them.
+
+Added:
+
+- `tests/test_regression_guards.py` -- a permanent contract lock. The critical
+  route list is **duplicated into the test file on purpose**: deleting an entry
+  from `NEVER_CLOSE_SEGMENTS` now fails CI instead of silently narrowing
+  protection. Also asserts every listed segment actually blocks (no dead
+  entries), that compound routes stay blocked, that real articles stay
+  closable, and -- as a source-level backstop -- that `cdp_close.py` still
+  calls the gate, so a single PR deleting both the gate and its tests fails.
+- `tests/mutation_guard.py` -- repeatable mutation testing, now a required CI
+  job. One-off mutation testing is only true on the day it is run; re-running
+  the eight mutants that matter means a test which silently stops
+  discriminating (an edited helper making its assertions vacuous) breaks the
+  build instead of quietly voiding a guarantee.
+  Each mutant is applied, the targeted tests must **fail**, and the file is
+  always restored in a `finally`. It refuses to run on a dirty tree, since
+  mutants are applied in place.
+
+Found by the guard on its first run:
+
+- A real coverage gap. Removing `NON_ARTICLE_SEGMENTS` matching flips `/mail`
+  and friends to `default-candidate` with **every existing test still passing**.
+  `cart` was masked because it is also in the harder `NEVER_CLOSE_SEGMENTS`,
+  which runs first; the routes reachable *only* through the soft list had no
+  direct test at all. Now covered by 17 parametrized cases.
+- One mutant of mine was also wrong. Mutating `NON_ARTICLE_PATH_RE` turned out
+  to be a semantic no-op, because that regex had already been anchored in the
+  blocklist work -- only the segment set is a real lever. Fixed rather than
+  left passing for the wrong reason.
+
+Tests: 313 pass (was 278), plus 8 mutants verified caught.
+
 ## [1.11.0] - 2026-10-04
 
 Hard never-close blocklist, and a real substring bug in the classifier.
