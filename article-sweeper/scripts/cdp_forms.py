@@ -116,7 +116,13 @@ def ws_connect(url: str, timeout: float = 5.0) -> socket.socket:
                 f"handshake rejected: {head.splitlines()[0][:80]}")
         # Verify the accept token: without this a plain HTTP server could
         # answer 101 and we would believe we have a WebSocket.
-        expect = base64.b64encode(hashlib.sha1(
+        # SHA-1 is not a choice here: RFC 6455 s4.2.2 step 5 defines
+        # accept = base64(SHA1(key + GUID)) and the server computes it the
+        # same way, so using anything stronger would break every handshake.
+        # Not used for integrity or signing - it only proves the peer is a
+        # WebSocket endpoint rather than a plain HTTP server.
+        # nosemgrep: python.security.hashlib.insecure-hash-algorithm
+        expect = base64.b64encode(hashlib.sha1(  # noqa: S324
             (key + WS_GUID).encode("ascii")).digest()).decode("ascii")
         got = ""
         for line in head.split("\r\n")[1:]:
