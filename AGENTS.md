@@ -2,6 +2,31 @@
 
 Behavioral rules for AI agents working in this repository. Read this before touching anything.
 
+## 🧹 Branch hygiene (required)
+
+Merged branches are deleted in the same task that merges them — never left behind.
+
+- **Before creating a branch or PR**, sweep and delete stale ones first:
+  ```bash
+  git fetch --all --prune
+  gh pr list --state all --head <branch> --json number,state   # MERGED -> candidate
+  git ls-remote --heads origin <branch> | wc -l                # 0 -> remote already gone
+  ```
+- **After a PR merges**, delete both halves immediately:
+  ```bash
+  git push origin --delete <branch>
+  git branch -d <branch>
+  ```
+  Or pass `--delete-branch` to `gh pr merge`.
+- **Squash merges make ancestry checks lie.** After a squash merge,
+  `git merge-base --is-ancestor <branch> origin/main` is false and `git cherry`
+  is unreliable, even though the work landed. Verify by content:
+  ```bash
+  git diff origin/main <branch> -- <files-the-branch-authored>   # empty = already in main
+  ```
+- **Never delete**: `main`, a branch with an `OPEN` PR, or a branch whose content
+  genuinely differs from `main`. When unsure, ask rather than force-delete.
+
 ## 🛑 Critical Rules
 
 - **Conventional Commits only:** `feat|fix|perf|docs|test|refactor|ci|chore|revert(scope):` (see `commitlint.config.cjs` if present). Don't use `--no-verify` unless it's genuinely broken.

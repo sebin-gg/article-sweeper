@@ -4,7 +4,7 @@ description: Summarize open article tabs in Thorium, Chromium, Chrome, Brave, Ed
 license: MIT
 allowed-tools: Bash Read Edit Write Task WebFetch WebSearch
 metadata:
-  version: "1.9.0"
+  version: "1.10.1"
   tags: "browser,tabs,summarize,thorium,chromium,firefox"
 ---
 
@@ -285,6 +285,14 @@ Fetch with retry, and stream the summary:
 python3 scripts/fetch_articles.py --concurrency 20 --per-domain 2 --with-text \
   --max-attempts 3 < "$SCRATCH/urls.txt" > "$SCRATCH/fetched.jsonl"
 ```
+
+Every result now also carries `page_title` (the document's own `og:title`,
+which beats the CDP title), `truncated` (whether the 16 KB summarizer cap bit),
+`challenge` (captcha/bot-wall/subscription interstitial) and `js_shell` (the
+body yielded almost no prose). Do not summarize a `challenge` result -- it is a
+bot wall, not an article -- and say `js_shell` plainly rather than inventing
+filler from an empty body. Signals are computed before truncation, so
+`signals.words` reflects the whole article.
 
 `--per-domain 2` caps each host independently: breadth still comes from the
 global 20-worker pool, so 4 TechGig tabs do not stop 11 other hosts from running.

@@ -14,6 +14,8 @@ sys.path.insert(0, str(SCRIPTS))
 import fetch_articles  # noqa: E402
 from fetch_articles import (  # noqa: E402
     DEFAULT_BACKOFF_CAP,
+    MAX_TEXT_CHARS,
+    MIN_WORDS,
     backoff_delay,
     is_retryable_status,
 )
@@ -574,3 +576,74 @@ def test_text_fields_absent_when_text_not_requested(monkeypatch):
     out = fetch_articles.fetch_one("https://example.com/x", timeout=5,
                                    allow_search_fallback=False)
     assert "text" not in out and "page_title" not in out
+
+
+# --- readability-first fetch, truncation, page title, challenge -----------
+
+_LONG_ARTICLE = ("<html><head><title>Deep Dive</title>"
+                 "<meta property='og:title' content='Deep Dive &amp; More'></head>"
+                 "<body><main><p>" + ("substantial analysis prose " * 2000)
+                 + "</p></main></body></html>")
+
+
+def _fetch_with_text(monkeypatch, body):
+    monkeypatch.setattr(fetch_articles.urllib.request, "urlopen",
+                        lambda req, timeout=None: _Resp(body))
+    return fetch_articles.fetch_one("https://ex.com/a", timeout=5,
+                                    allow_search_fallback=False, want_text=True)
+
+
+def test_text_is_capped_and_flags_truncation(monkeypatch):
+    out = _fetch_with_text(monkeypatch, _LONG_ARTICLE.encode())
+    assert out["truncated"] is True
+    assert len(out["text"]) <= fetch_articles.MAX_TEXT_CHARS
+    assert fetch_articles.MAX_TEXT_CHARS <= 20_000, "prompt cap must stay small"
+
+
+def test_short_body_is_not_flagged_truncated(monkeypatch):
+    out = _fetch_with_text(monkeypatch,
+                           b"<html><body><main><p>Short piece.</p></main></body></html>")
+    assert out["truncated"] is False
+
+
+def test_signals_come_from_full_text_not_the_capped_prefix(monkeypatch):
+    """Capping first would understate density and skew the word-count floor."""
+    out = _fetch_with_text(monkeypatch, _LONG_ARTICLE.encode())
+    # 3 words x 2000 reps = 6000 words; the 16 KB cap holds ~2700, so a
+    # count above that proves the signals were taken before truncation.
+    assert out["signals"]["words"] > 5000, "signals must reflect the whole body"
+
+
+def test_page_title_is_returned_and_beats_the_document_title(monkeypatch):
+    out = _fetch_with_text(monkeypatch, _LONG_ARTICLE.encode())
+    assert out["page_title"] == "Deep Dive & More"
+
+
+def test_js_shell_is_flagged_rather_than_summarized(monkeypatch):
+    """A near-empty body must be reported, not fed to the summarizer as prose."""
+    out = _fetch_with_text(monkeypatch,
+                           b"<html><body><div id='root'></div>"
+                           b"<script>render()</script></body></html>")
+    assert out["js_shell"] is True
+    assert out["signals"]["words"] < fetch_articles.MIN_WORDS
+
+
+def test_challenge_page_is_flagged_from_the_fetch(monkeypatch):
+    out = _fetch_with_text(monkeypatch,
+                           b"<html><head><title>Just a moment...</title></head>"
+                           b"<body><h1>Verify you are human</h1></body></html>")
+    assert out["challenge"].startswith("challenge:")
+    assert out["page_title"] == "", "interstitial placeholder must not become a title"
+
+
+def test_real_article_sets_no_challenge_flag(monkeypatch):
+    out = _fetch_with_text(monkeypatch, _LONG_ARTICLE.encode())
+    assert out["challenge"] == "" and out["js_shell"] is False
+
+
+def test_readability_preferred_over_whole_body(monkeypatch):
+    body = ("<html><body><nav>Menu Careers Contact</nav><main><p>"
+            + ("real prose here " * 500) + "</p></main></body></html>").encode()
+    out = _fetch_with_text(monkeypatch, body)
+    assert "Careers" not in out["text"]
+    assert "real prose here" in out["text"]
