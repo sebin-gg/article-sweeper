@@ -239,7 +239,12 @@ def probe_dirty_form(ws_url: str, *, timeout: float = 5.0) -> tuple[bool, str]:
     guess.
     """
     if not ws_url or not str(ws_url).startswith("ws://"):
-        return True, "no-websocket-url (cannot verify; failing closed)"
+        # Name the remedy, not just the symptom. An operator who sees this and
+        # is not told what to do is simply stuck, and the obvious wrong move is
+        # to assume the tab was clean.
+        return True, ("no-websocket-url: this browser does not publish one, "
+                      "so every close is blocked; re-run cdp_close.py with "
+                      "--no-form-guard to accept that risk")
     sock = None
     try:
         sock = ws_connect(str(ws_url), timeout=timeout)

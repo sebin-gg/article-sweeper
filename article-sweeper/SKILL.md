@@ -4,7 +4,7 @@ description: Summarize open article tabs in Thorium, Chromium, Chrome, Brave, Ed
 license: MIT
 allowed-tools: Bash Read Edit Write Task WebFetch WebSearch
 metadata:
-  version: "1.14.1"
+  version: "1.15.0"
   tags: "browser,tabs,summarize,thorium,chromium,firefox"
 ---
 
@@ -560,9 +560,34 @@ over CDP for unsaved input — a non-empty field, textarea, `contenteditable`,
 or an attached file. Half-typed work is invisible to URL and target-id checks:
 the tab looks completely normal while a reply is about to be destroyed. The
 probe **fails closed** — if it cannot reach a definite answer, the tab is left
-open. On a browser that does not publish `webSocketDebuggerUrl` this blocks
-every close until you pass `--no-form-guard`; that is the intended trade, and
-the flag is a deliberate opt-out rather than a silent fallback.
+open.
+
+> **If `cdp_close.py` skips every tab with `no-websocket-url`, re-run it with
+> `--no-form-guard`.** That message means the browser does not publish
+> `webSocketDebuggerUrl` in `/json/list`, so the probe has no way to ask. The
+> guard then treats every tab as unveritable and blocks every close, which
+> looks like the tool doing nothing but is it refusing to guess.
+>
+> Add the flag and say so plainly in your final report:
+>
+> ```bash
+> python3 scripts/cdp_close.py ids.txt --host 127.0.0.1 --port <port> \
+>   --expect $SCRATCH/cdp-before.json --browser <name> \
+>   --summary $SCRATCH/summary.md --endpoint 127.0.0.1:<port> \
+>   --no-form-guard
+> ```
+>
+> You are trading unsaved-input detection for the ability to close at all.
+> Say which trade you made. `--no-form-guard` is a deliberate opt-out, never a
+> silent fallback.
+>
+> **You almost certainly do not need this.** Verified live: both **Thorium**
+> and **Microsoft Edge** publish `webSocketDebuggerUrl` on page targets, so the
+> guard runs normally on them. Firefox and Zen expose no Chrome-style CDP at
+> all, so `cdp_close.py` does not apply to them in the first place. Reach for
+> the flag only when you have actually seen the `no-websocket-url` message —
+> not preemptively, because skipping the probe on a browser that supports it
+> removes a real safety net for nothing.
 
 **A hard never-close blocklist also applies, and it outranks everything.**
 Checkout, cart, payment, billing, login, OAuth, 2FA/MFA/OTP, password reset,
