@@ -35,6 +35,11 @@ OP_PONG = 0xA
 
 MAX_FRAME = 8 * 1024 * 1024
 
+#: A document younger than this is treated as still settling. Nobody has typed
+#: meaningful input in well under a second, and client-side forms commonly
+#: appear after commit, so refusing to conclude "clean" costs almost nothing.
+MIN_DOCUMENT_AGE_MS = 1200
+
 # Evaluated in the page. Deliberately conservative: it reports any non-empty
 # editable field, including a single stray character, because leaving a tab
 # open costs far less than losing typed work.
@@ -68,7 +73,15 @@ DIRTY_FORM_JS = r"""
   // half-parsed DOM. `loading` means the document is still being built and a
   // form may not exist yet; `interactive` means the DOM is complete and
   // subresources are still arriving, so the field scan above IS reliable.
-  return { dirty: parts.length > 0, fields: parts, readyState: document.readyState };
+  // `ageMs` is how long this document has existed. A page that has just
+  // committed is still settling: client-side code commonly injects its form a
+  // second or two after load, so scanning immediately after a navigation can
+  // find nothing on a page that is about to present a form.
+  const age = performance && performance.timeOrigin
+    ? Math.max(0, Math.round(Date.now() - performance.timeOrigin))
+    : -1;
+  return { dirty: parts.length > 0, fields: parts,
+           readyState: document.readyState, ageMs: age };
 })()
 """
 
@@ -253,6 +266,13 @@ def probe_dirty_form(ws_url: str, *, timeout: float = 5.0) -> tuple[bool, str]:
         if not isinstance(value, dict):
             return True, "unparseable Runtime.evaluate result (failing closed)"
         ready = value.get("readyState")
+        age = value.get("ageMs")
+        if isinstance(age, (int, float)) and age < MIN_DOCUMENT_AGE_MS:
+            # Just committed. readyState may already read "interactive" while
+            # the real form is still being injected, so a field scan here is
+            # not evidence of anything.
+            return True, (f"page-just-navigated ({int(age)}ms old) "
+                          "(cannot verify)")
         if ready == "loading":
             # Found by testing against a real browser: a page still parsing
             # has no inputs yet, so the scan returns an empty result that is

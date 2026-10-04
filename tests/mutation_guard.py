@@ -117,6 +117,14 @@ MUTANTS = [
         None,
     ),
     (
+        "form-guard-accepts-just-committed-dom",
+        FORMS,
+        "        if isinstance(age, (int, float)) and age < MIN_DOCUMENT_AGE_MS:",
+        "        if False:",
+        "cdp_forms",
+        None,
+    ),
+    (
         "form-guard-skipped-entirely",
         CLOSE,
         "    if not args.no_form_guard:",
