@@ -736,7 +736,9 @@ _PLACEHOLDER_TITLE_RE = re.compile(
 
 def _is_placeholder_title(text: str) -> bool:
     """True for interstitials and empty shells masquerading as titles."""
-    if _PLACEHOLDER_TITLE_RE.match(text.strip()):
+    # Bot walls append ellipses ("Just a moment..."), so compare on the
+    # stripped core rather than requiring an exact end-of-string match.
+    if _PLACEHOLDER_TITLE_RE.match(text.strip().rstrip(". ")):
         return True
     # ALL-CAPS job-spam casing, e.g. "FREE MONEY NOW!!!".
     letters = [c for c in text if c.isalpha()]
@@ -767,7 +769,11 @@ def page_title(html: str) -> str:
             continue
         text = (m.group(1).replace("&amp;", "&").replace("&lt;", "<")
                 .replace("&gt;", ">").replace("&quot;", '"')
-                .replace("&#39;", "'").replace("&nbsp;", " "))
+                .replace("&#39;", "'").replace("&nbsp;", " ")
+                .replace("&mdash;", "\u2014").replace("&ndash;", "\u2013")
+                .replace("&hellip;", "\u2026").replace("&rsquo;", "\u2019")
+                .replace("&lsquo;", "\u2018").replace("&ldquo;", "\u201c")
+                .replace("&rdquo;", "\u201d"))
         text = re.sub(r"\s+", " ", text).strip(" \t\r\n-\u2013\u2014|\u00b7\u2022")
         if text and not _is_placeholder_title(text):
             return text

@@ -15,6 +15,9 @@ import sweep_lib  # noqa: E402  (needed to patch atomic_append)
 from unittest.mock import patch  # noqa: E402
 from sweep_lib import (  # noqa: E402
     SummaryStream,
+    extract_readable,
+    page_title,
+    looks_like_challenge,
     TabRecord,
     atomic_append,
     canonicalize_url,
@@ -2330,3 +2333,96 @@ def test_looks_like_challenge_clear_page_is_not_flagged():
     ok, why = sweep_lib.looks_like_challenge(
         html="<p>ordinary article</p>", text="ordinary article")
     assert (ok, why) == (False, "")
+
+
+# --- readability, page titles, challenge detection, truncation -------------
+
+def test_readability_prefers_main_over_chrome():
+    """The JS-heavy case: real prose in <main>, junk everywhere else."""
+    html = ("<html><head><style>.x{}</style></head><body>"
+            "<nav>Home About Contact Careers Subscribe Newsletter</nav>"
+            "<header>Site logo menu toggle</header>"
+            "<main><article><p>" + ("the actual article body " * 60) +
+            "</p></article></main>"
+            "<aside>Related posts ads</aside><footer>Copyright</footer>"
+            "</body></html>")
+    text = extract_readable(html)
+    assert "the actual article body" in text
+    assert "Careers" not in text and "Copyright" not in text
+
+
+def test_readability_excludes_body_content_outside_main():
+    """Isolates the container preference from the junk-stripping.
+
+    The junk regex already removes nav/aside/footer, so preferring <main>
+    only shows up against ordinary body content -- a promo block or related
+    -articles rail that is *not* a structural tag. Without this, a build
+    that ignores <main> entirely still passes every readability assertion.
+    """
+    html = ("<html><body><div class='promo'>Limited offer buy now "
+            "discount code</div>"
+            "<main><p>" + ("the actual article body " * 60) + "</p></main>"
+            "<div class='related'>You might also like these other stories "
+            "</div></body></html>")
+    text = extract_readable(html)
+    assert "the actual article body" in text
+    assert "discount code" not in text, "body junk outside <main> must be dropped"
+    assert "You might also like" not in text
+
+
+def test_readability_falls_back_to_body_without_container():
+    html = "<html><body><p>" + ("plain prose here " * 60) + "</p></body></html>"
+    assert "plain prose here" in extract_readable(html)
+
+
+def test_readability_empty_input_is_empty():
+    assert extract_readable("") == "" and extract_readable("<html></html>") == ""
+
+
+def test_page_title_prefers_og_and_unescapes():
+    html = ('<title>SEO junk</title>'
+            '<meta property="og:title" content="Real &amp; True &mdash; Story">')
+    assert page_title(html) == "Real & True — Story"
+
+
+def test_page_title_handles_reversed_meta_attrs():
+    html = '<meta content="Reversed Order" property="og:title">'
+    assert page_title(html) == "Reversed Order"
+
+
+def test_page_title_rejects_placeholders_and_allcaps():
+    """CDP titles arrive as 'Human Verification' or ALL-CAPS job spam."""
+    assert page_title("<title>Human Verification</title>") == ""
+    assert page_title("<title>Access Denied</title>") == ""
+    assert page_title("<title>FREE MONEY NOW CLICK HERE</title>") == ""
+    # A short normal-cased title is fine.
+    assert page_title("<title>Real Headline</title>") == "Real Headline"
+
+
+def test_page_title_falls_through_placeholder_og_to_real_title():
+    html = ('<meta property="og:title" content="Human Verification">'
+            '<title>The Actual Article</title>')
+    assert page_title(html) == "The Actual Article"
+
+
+@pytest.mark.parametrize("needle", [
+    "Verify you are human", "Checking your browser", "Just a moment",
+    "Access denied", "Please enable JavaScript and cookies",
+    "Subscribe to continue", "unusual traffic",
+])
+def test_challenge_detected(needle):
+    ok, why = looks_like_challenge(html=f"<div>{needle}</div>")
+    assert ok and why.startswith("challenge:")
+
+
+def test_ordinary_article_is_not_a_challenge():
+    ok, _ = looks_like_challenge(
+        html="<html><body><p>An ordinary essay about gardening.</p></body></html>")
+    assert not ok
+
+
+def test_dense_captcha_page_would_otherwise_pass_density():
+    """A challenge page can be text-dense; detection must not rely on density."""
+    dense = "Please verify you are human. " * 60
+    ok, _ = looks_like_challenge(html=dense)
+    assert ok, "dense interstitial must still be caught"

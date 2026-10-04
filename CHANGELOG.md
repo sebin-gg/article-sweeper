@@ -50,6 +50,33 @@ Tests:
   message alongside otherwise-parseable output. Verified it fails against the
   previous behaviour.
 
+## [1.10.1] - 2026-10-04
+
+Two title-parsing bugs found while testing #14, plus the coverage that finds
+them.
+
+Fixed:
+
+- **Bot-wall placeholders leaked through as titles.** `_is_placeholder_title()`
+  matched exactly, so the title a challenge page actually ships --
+  `"Just a moment..."` -- was accepted and filed as an article title. Matching
+  now happens on the stripped core, so a trailing ellipsis no longer defeats
+  it. Verified: `page_title("<title>Just a moment...</title>") == ""`.
+- **Typographic entities were not decoded.** `og:title` values routinely carry
+  `&mdash;`, `&ndash;`, `&hellip;` and curly quotes, which reached the summary
+  verbatim. Now decoded to the actual characters.
+
+Tests:
+
+- 39 tests added over the #14 code, including the fetch-path contract
+  (`truncated`, `challenge`, `js_shell`, `page_title`) that #14 shipped
+  without.
+- `test_readability_excludes_body_content_outside_main` is the one that
+  matters most: dropping the `<main>` preference entirely passes every other
+  readability assertion, because the junk regex already strips nav/footer and
+  the container choice only shows up against ordinary body content. Found by
+  mutation testing, not by reading the code.
+
 ## [1.9.0] - 2026-10-03
 
 The summary file becomes the close gate, so the run audits itself.
