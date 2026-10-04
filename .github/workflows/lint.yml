@@ -134,6 +134,39 @@ jobs:
       - name: Behavioral tests
         run: python -m pytest tests/ -q
 
+  coverage:
+    # Coverage flags live here rather than in a pytest.ini addopts block on
+    # purpose: --cov in addopts would break a plain `pytest` run for anyone
+    # without pytest-cov installed locally, which is a normal dev state.
+    #
+    # --cov-fail-under is a ratchet, not an aspiration: the measured baseline is
+    # 66% over article-sweeper/scripts. Raise it as tests are added.
+    name: Coverage
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - name: Install test deps (hash-locked)
+        run: "pip install --only-binary=:all: --require-hashes -r requirements-ci.txt"
+      - name: Tests with coverage
+        run: >-
+          python -m pytest tests/ -q
+          --cov=article-sweeper/scripts
+          --cov-report=term-missing
+          --cov-report=xml
+          --cov-fail-under=60
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: coverage.xml
+          retention-days: 14
+
   test-windows:
     name: Test (windows-latest)
     runs-on: windows-latest
