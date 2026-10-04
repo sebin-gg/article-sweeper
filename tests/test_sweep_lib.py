@@ -2704,4 +2704,4 @@ def test_form_guard_fails_closed_without_websocket_url(tmp_path):
                 "--form-guard")
         assert "A" in cdp.tabs and cdp.closed_puts == [], (
             "no ws url must fail closed")
-        assert "failing closed" in (r.stdout + r.stderr)
+        assert "no-websocket-url" in (r.stdout + r.stderr)

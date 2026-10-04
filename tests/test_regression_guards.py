@@ -155,3 +155,19 @@ def test_mutation_guard_verifies_it_restored_source():
     assert "source left mutated after the run" in src
     assert "already modified" in src, (
         "the guard must refuse to start on a tree left dirty by a killed run")
+
+
+def test_skill_documents_the_form_guard_opt_out():
+    """The model reads SKILL.md, not the source. The remedy must be in there.
+
+    An operator -- or the agent acting for them -- needs to find the flag
+    without reading Python. This pins the three things: the trigger message,
+    the flag, and the warning that skipping the probe costs real protection.
+    """
+    skill = (SCRIPTS.parent / "SKILL.md").read_text(encoding="utf-8")
+    assert "no-websocket-url" in skill, (
+        "SKILL.md must name the message that triggers the opt-out")
+    assert "--no-form-guard" in skill
+    assert "Thorium" in skill and "Edge" in skill, (
+        "document which browsers were verified to work, so the flag is not "
+        "used preemptively")

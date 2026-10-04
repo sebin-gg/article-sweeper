@@ -73,7 +73,7 @@ def test_probe_fails_closed_on_cdp_error():
 @pytest.mark.parametrize("url", ["", None, "http://127.0.0.1:9/x", "not-a-url"])
 def test_probe_without_websocket_url_fails_closed(url):
     dirty, why = cdp_forms.probe_dirty_form(url)
-    assert dirty is True and "failing closed" in why
+    assert dirty is True and "no-websocket-url" in why
 
 
 def test_probe_never_raises():
@@ -150,3 +150,18 @@ def test_missing_ready_state_does_not_silently_pass():
                 "dirty": False, "fields": [], "readyState": "complete"}}}}) as s:
         dirty, _ = cdp_forms.probe_dirty_form(s.url, timeout=5)
     assert dirty is False, "a complete reply without readyState is still usable"
+
+
+# --- the remedy must be named, not just the symptom ------------------------
+
+@pytest.mark.parametrize("bad", ["", None, "http://127.0.0.1:9/x", "not-a-url"])
+def test_no_ws_url_message_names_the_flag(bad):
+    """An operator who sees the failure and is not told the fix is stuck.
+
+    The obvious wrong move is to read "failing closed" and assume the tab was
+    clean, or to retry forever. The message must carry the remedy.
+    """
+    dirty, why = cdp_forms.probe_dirty_form(bad)
+    assert dirty is True
+    assert "--no-form-guard" in why, f"message must name the opt-out: {why!r}"
+    assert "no-websocket-url" in why

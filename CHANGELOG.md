@@ -50,7 +50,37 @@ Tests:
   message alongside otherwise-parseable output. Verified it fails against the
   previous behaviour.
 
-## [1.14.1] - 2026-10-04
+## [1.15.0] - 2026-10-04
+
+Tell the operator what to do when the form guard blocks everything.
+
+Fixed:
+
+- The `no-websocket-url` failure told you *what happened* but not *what to do*.
+  An operator seeing `failing closed` has two wrong moves available: assume the
+  tab was clean, or retry indefinitely. The message now names the remedy:
+  re-run with `--no-form-guard`, and says that accepting the risk is the
+  point.
+- `SKILL.md` gains an explicit "if you see this, do this" block: the trigger
+  message, the exact command, the requirement to say which trade was made, and
+  a warning not to use the flag preemptively.
+- The block also records **which browsers were verified live** -- Thorium and
+  Edge both publish `webSocketDebuggerUrl`, so the guard runs normally on them
+  and the flag is almost never needed. Firefox and Zen expose no Chrome-style
+  CDP at all, so `cdp_close.py` does not apply to them.
+
+The trade being documented: `--no-form-guard` gives up unsaved-input detection
+in exchange for being able to close at all. That is a real loss, so it is an
+explicit opt-out with a stated reason, never a silent fallback.
+
+Tests:
+
+- 373 pass (was 368). The no-ws-url message must contain `--no-form-guard` (a
+  remedy, not just a symptom); and `SKILL.md` must name the trigger message,
+  the flag, and the verified browsers -- the model reads the skill, not the
+  source, so the remedy has to live in the skill.
+
+
 
 A page still loading is no longer reported clean.
 
