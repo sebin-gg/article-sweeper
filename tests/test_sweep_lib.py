@@ -2261,3 +2261,72 @@ def test_duplicate_summary_link_is_reported(tmp_path):
     p.write_text(raw, encoding="utf-8")
     index, problems = sweep_lib.parse_summary_file(p)
     assert len(index) == 1 and any("duplicate" in x for x in problems)
+
+
+# --- readability pass, page-title recovery, challenge detection ------------
+
+
+def test_extract_readable_prefers_content_container():
+    body = " ".join(["prose"] * 60)
+    html = ("<html><body><nav>Home Archive Contact</nav>"
+            f"<main><p>{body}</p></main></body></html>")
+    out = sweep_lib.extract_readable(html)
+    assert "Home Archive" not in out  # nav is never article prose
+    assert "prose" in out
+
+
+def test_extract_readable_strips_structural_junk_without_container():
+    html = ("<html><head><style>.nav{color:red}</style></head><body>"
+            "<p>Visible body prose.</p>"
+            "<script>var tracked = 1;</script></body></html>")
+    out = sweep_lib.extract_readable(html)
+    assert "Visible body prose." in out
+    assert "var tracked" not in out and ".nav" not in out
+
+
+def test_extract_readable_empty_input_is_empty():
+    assert sweep_lib.extract_readable("") == ""
+
+
+def test_page_title_prefers_og_title_over_tab_history_title():
+    html = ('<html><head><title>Tab History Title</title>'
+            '<meta property="og:title" content="Editorial &amp; Title">'
+            "</head></html>")
+    assert sweep_lib.page_title(html) == "Editorial & Title"
+
+
+def test_page_title_decodes_entities_and_normalises_whitespace():
+    html = ('<html><head><meta content="A&nbsp;&amp;  B&#39;s" '
+            'property="og:title"></head></html>')
+    assert sweep_lib.page_title(html) == "A & B's"
+
+
+def test_page_title_rejects_placeholder_titles():
+    assert sweep_lib.page_title(
+        "<html><head><title>Just a moment</title></head></html>") == ""
+    # ALL-CAPS job-spam casing is a placeholder too.
+    assert sweep_lib.page_title(
+        "<html><head><title>FREE MONEY NOW!!!</title></head></html>") == ""
+    # A placeholder <title> never beats a real og:title.
+    html = ('<html><head><title>Human Verification</title>'
+            '<meta property="og:title" content="Real Story"></head></html>')
+    assert sweep_lib.page_title(html) == "Real Story"
+
+
+def test_page_title_missing_input_returns_empty():
+    assert sweep_lib.page_title("") == ""
+    assert sweep_lib.page_title("<html><body>no title</body></html>") == ""
+
+
+def test_looks_like_challenge_detects_html_and_text_signals():
+    ok, why = sweep_lib.looks_like_challenge(html="<div>Checking your browser</div>")
+    assert ok and why == "challenge:checking your browser"
+    ok, why = sweep_lib.looks_like_challenge(
+        text="Please complete the security check to continue")
+    assert ok and why.startswith("challenge:")
+
+
+def test_looks_like_challenge_clear_page_is_not_flagged():
+    ok, why = sweep_lib.looks_like_challenge(
+        html="<p>ordinary article</p>", text="ordinary article")
+    assert (ok, why) == (False, "")

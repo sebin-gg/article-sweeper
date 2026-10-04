@@ -55,7 +55,7 @@ scratch costs most of the setup time, so use these:
 | `scripts/list_cdp_tabs.py` | List live tabs from a CDP endpoint as JSON | §2 enumerate Chromium-family tabs |
 | `scripts/cdp_close.py` | Close tabs: summary-entry gate, endpoint+browser identity, close-time revalidation, last-page guard | §6 close summarized tabs |
 | `scripts/decode_firefox_session.py` | Decode a Firefox session copy (`mozLz4`) into tabs | §2 Firefox fallback (needs `lz4`) |
-| `scripts/fetch_articles.py` | Fetch article bodies concurrently (20 wide, 2 per host), returning per-URL outcome plus `--with-text` density signals | §4 parallel fetch + content refinement |
+| `scripts/fetch_articles.py` | Fetch article bodies concurrently (20 wide, 2 per host), returning per-URL outcome plus `--with-text` text, density signals, page title and challenge label | §4 parallel fetch + content refinement |
 
 If you find yourself writing `list_cdp_tabs.py`, `cdp_close.py` or a Firefox
 session decoder from scratch, stop — the one you need is above.
@@ -237,6 +237,14 @@ extracted text and density signals come back on the same request. The URL gate
 has already excluded webmail, repos and dashboards, so a body you fetch is one
 you intended to read — and that body is free evidence for the decision that is
 still open.
+
+Read the extra fields before summarizing: `challenge` (`challenge:<needle>`)
+means the body is a captcha/bot-wall/subscription gate, not an article — do not
+summarize it as one; `js_shell` means fewer than `MIN_WORDS` words of prose (a
+JS shell, not an empty article); `page_title` is the page's own
+`og:title`/`<title>` (placeholders rejected) and beats a stale CDP history
+title; `truncated` records that the summariser input was capped at 16 000
+chars — density signals were computed on the full text and remain trustworthy.
 
 ```bash
 python3 - <<'EOF' > "$SCRATCH/urls.txt"

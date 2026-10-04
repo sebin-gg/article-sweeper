@@ -672,6 +672,108 @@ def html_to_text(html: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
+# --- readability, titles, and challenge detection --------------------------
+
+# Structural noise that is never article prose. Dropped before density is
+# measured so a page is not judged by its own navigation menu.
+_READABILITY_JUNK_RE = re.compile(
+    r"(?is)<(script|style|noscript|template|svg|iframe|form|nav|aside|footer|"
+    r"header)\b.*?</\1\s*>")
+
+# Content-bearing containers, most specific first. When one exists it beats the
+# whole body, which is how a JS-heavy page that renders its article into
+# <main> is recovered instead of written off as an empty shell.
+_READABILITY_MAIN_RE = re.compile(
+    r"(?is)<(article|main)\b[^>]*>(.*?)</\1\s*>")
+
+CHALLENGE_PATTERNS = (
+    "verify you are human", "are you a robot", "checking your browser",
+    "just a moment", "attention required", "enable javascript and cookies",
+    "please complete the security check", "unusual traffic",
+    "access denied", "you have been blocked", "captcha",
+    "subscribe to continue", "sign in to continue", "create an account to",
+    "you've reached your article limit", "become a member to read",
+)
+
+
+def looks_like_challenge(html: str = "", text: str = "") -> tuple[bool, str]:
+    """Detect an interstitial: captcha, bot-wall, or subscription gate.
+
+    A challenge page is dense with text and can otherwise pass every density
+    check, so it must be recognised explicitly before its content is trusted
+    or summarized. The raw HTML is checked too because a bot wall's own markup
+    is more reliable than its rendered copy.
+    """
+    hay = (html + "\n" + text).lower()
+    for needle in CHALLENGE_PATTERNS:
+        if needle in hay:
+            return True, f"challenge:{needle}"
+    return False, ""
+
+
+def extract_readable(html: str) -> str:
+    """Best-effort readability pass over raw HTML, run before any search fallback.
+
+    Order matters: strip structural junk first, then prefer a content-bearing
+    container when the page offers one. Searching is the last resort, so a
+    page whose article is merely buried in <main> must be recovered here
+    rather than sent to search at extra cost and lower fidelity.
+    """
+    if not html:
+        return ""
+    cleaned = _READABILITY_JUNK_RE.sub(" ", html)
+    m = _READABILITY_MAIN_RE.search(cleaned)
+    if m:
+        cleaned = m.group(2)
+    return html_to_text(cleaned)
+
+
+_PLACEHOLDER_TITLE_RE = re.compile(
+    r"(?i)^(human verification|attention required|just a moment|"
+    r"access denied|one more step|loading|verifying you are human|"
+    r"checking your browser|page not found|error)$")
+
+
+def _is_placeholder_title(text: str) -> bool:
+    """True for interstitials and empty shells masquerading as titles."""
+    if _PLACEHOLDER_TITLE_RE.match(text.strip()):
+        return True
+    # ALL-CAPS job-spam casing, e.g. "FREE MONEY NOW!!!".
+    letters = [c for c in text if c.isalpha()]
+    if len(letters) >= 12 and all(c.isupper() for c in letters):
+        return True
+    return False
+
+
+def page_title(html: str) -> str:
+    """Prefer the page's own og:title/<title> over the CDP-reported title.
+
+    CDP titles are frequently the tab's history title rather than the
+    document's: HTML entities left unescaped, ALL-CAPS job spam, or a
+    "Human Verification" placeholder left by a bot wall. og:title is the
+    publisher's own editorial title, so it wins when present. Placeholder
+    titles are rejected so the caller can fall back instead of filing
+    "Human Verification" as an article title.
+    """
+    if not html:
+        return ""
+    for rx in (r"(?is)<meta[^>]+property=[\"']og:title[\"'][^>]*"
+               r"content=[\"']([^\"']{1,300})[\"']",
+               r"(?is)<meta[^>]+content=[\"']([^\"']{1,300})[\"'][^>]*"
+               r"property=[\"']og:title[\"']",
+               r"(?is)<title[^>]*>(.*?)</title>"):
+        m = re.search(rx, html)
+        if not m:
+            continue
+        text = (m.group(1).replace("&amp;", "&").replace("&lt;", "<")
+                .replace("&gt;", ">").replace("&quot;", '"')
+                .replace("&#39;", "'").replace("&nbsp;", " "))
+        text = re.sub(r"\s+", " ", text).strip(" \t\r\n-\u2013\u2014|\u00b7\u2022")
+        if text and not _is_placeholder_title(text):
+            return text
+    return ""
+
+
 def content_signals(text: str) -> dict:
     """Cheap density/readability metrics. No model, no tokens."""
     t = (text or "").strip()
