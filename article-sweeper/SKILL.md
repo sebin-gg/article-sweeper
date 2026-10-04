@@ -4,7 +4,7 @@ description: Summarize open article tabs in Thorium, Chromium, Chrome, Brave, Ed
 license: MIT
 allowed-tools: Bash Read Edit Write Task WebFetch WebSearch
 metadata:
-  version: "1.11.0"
+  version: "1.11.1"
   tags: "browser,tabs,summarize,thorium,chromium,firefox"
 ---
 
@@ -293,6 +293,13 @@ body yielded almost no prose). Do not summarize a `challenge` result -- it is a
 bot wall, not an article -- and say `js_shell` plainly rather than inventing
 filler from an empty body. Signals are computed before truncation, so
 `signals.words` reflects the whole article.
+
+Safety rules are guarded, not just documented. `tests/test_regression_guards.py`
+pins the never-close contract (the critical route list is duplicated there on
+purpose, so deleting an entry fails CI), and `tests/mutation_guard.py` runs the
+safety mutants in CI — each must still be caught by a failing test. If you
+change the blocklist, the classifier, or the close gates, run
+`python3 tests/mutation_guard.py --keep-going` before pushing.
 
 `--per-domain 2` caps each host independently: breadth still comes from the
 global 20-worker pool, so 4 TechGig tabs do not stop 11 other hosts from running.
