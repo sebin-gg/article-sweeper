@@ -1679,6 +1679,102 @@ STREAM_TRAILER_RE = re.compile(
     r"(?: (?P<status>complete|partial))? -->$", re.M)
 
 
+SOURCE_FETCH = "fetch"
+SOURCE_SEARCH = "search"
+SOURCE_PAYWALLED = "paywalled"
+INDEX_SOURCES = frozenset({SOURCE_FETCH, SOURCE_SEARCH, SOURCE_PAYWALLED})
+
+
+def validate_provenance(rec: dict) -> tuple[bool, list[str]]:
+    """Check that an index record's provenance is honest and complete.
+
+    The whole point of recording search sources is that a summary built from
+    someone else's snippet stays distinguishable from one read off the page.
+    A record that *claims* `search` while listing nothing consulted is worse
+    than no record at all: it looks audited and is not. So such a record is
+    rejected, and the run refuses to call itself complete.
+
+    Rules:
+      - `source` must be one of the known values.
+      - `source == "search"` REQUIRES at least one `sources_consulted` URL.
+      - `source != "search"` must not claim consulted sources; a fetch-derived
+        summary with a search-source list means the provenance was mixed up.
+      - every consulted source must be an http(s) URL, so the claim is
+        checkable later rather than being a free-text note.
+    """
+    problems: list[str] = []
+    src = rec.get("source", SOURCE_FETCH)
+    if src not in INDEX_SOURCES:
+        problems.append(f"unknown source {src!r}")
+    consulted = [s for s in (rec.get("sources_consulted") or []) if s]
+    if src == SOURCE_SEARCH and not consulted:
+        problems.append(
+            "source=search with no sources_consulted: unverifiable, and "
+            "indistinguishable from a fabricated summary")
+    if src != SOURCE_SEARCH and consulted:
+        problems.append(f"source={src} but lists consulted sources")
+    for s in consulted:
+        try:
+            parsed = urllib.parse.urlparse(s)
+        except ValueError:
+            parsed = None
+        if parsed is None or parsed.scheme not in ("http", "https") \
+                or not parsed.netloc:
+            problems.append(f"consulted source is not an http(s) URL: {s[:60]!r}")
+    return (not problems), problems
+
+
+def search_queue(results) -> list[str]:
+    """URLs a fetch run handed to search instead of reading.
+
+    Everything here produced no body of its own, so a summary built for one of
+    these is search-derived and MUST be recorded as such with the sources
+    actually consulted. Returning them explicitly is what stops the agent from
+    quietly filing a title-derived entry that claims `source=fetch`.
+    """
+    return sorted({r.get("url", "") for r in results
+                   if isinstance(r, dict) and r.get("needs_search")
+                   and r.get("url")})
+
+
+class SearchRecorder:
+    """Mechanically record what a search-based summary actually consulted.
+
+    Searches are run by subagents, so the URLs read are known only at the
+    moment they are read. Recording them by hand at summary time is exactly
+    the kind of discipline that quietly lapses, and a lapsed recording is
+    indistinguishable from a fabricated one. This makes it structural.
+
+        rec = SearchRecorder()
+        rec.record("https://paywalled.example/story",
+                   "https://result.example/a", "https://result.example/b")
+        stream.emit(entry, source=SOURCE_SEARCH,
+                    sources_consulted=rec.consulted("https://paywalled.example/story"))
+    """
+
+    def __init__(self):
+        self._by_canonical: dict[str, list[str]] = {}
+        self.unrecorded: list[str] = []
+
+    def record(self, url: str, *consulted: str) -> None:
+        """Note that `consulted` were read while searching for `url`."""
+        key = canonicalize_url(url)
+        bucket = self._by_canonical.setdefault(key, [])
+        for c in consulted:
+            c = str(c)
+            if c not in bucket:
+                bucket.append(c)
+
+    def consulted(self, url: str) -> list[str]:
+        return list(self._by_canonical.get(canonicalize_url(url), []))
+
+    def finalize(self, searched_urls) -> list[str]:
+        """Return searched URLs that recorded nothing. Call before closing."""
+        self.unrecorded = [u for u in searched_urls
+                           if not self._by_canonical.get(canonicalize_url(u))]
+        return list(self.unrecorded)
+
+
 class SummaryStream:
     """Streaming writer for the summary file: classify -> fetch -> summarize
     without rigid batches.
@@ -1717,6 +1813,7 @@ class SummaryStream:
         self.index_path = Path(index_path) if index_path else None
         self.run_date = datetime.now(timezone.utc).date().isoformat()
         self.records: list[dict] = []
+        self.provenance_problems: list[str] = []
         self._ensure_header(header_extra)
 
     def _ensure_header(self, header_extra: str) -> None:
@@ -1780,6 +1877,14 @@ class SummaryStream:
                     str(x) for x in (sources_consulted or [])),
                 **extra,
             })
+            prov_ok, prov_problems = validate_provenance(self.records[-1])
+            if not prov_ok:
+                # Keep the record (dropping it would hide the problem) but mark
+                # the run unverified so it cannot report `complete: true`.
+                self.records[-1]["provenance_problems"] = prov_problems
+                self.provenance_problems.extend(
+                    f"{self.records[-1].get('canonical', '')[:60]}: {q}"
+                    for q in prov_problems)
         # Keep the running count honest so an interrupted run is readable.
         recount_and_fix_header(self.path)
 
@@ -1791,7 +1896,10 @@ class SummaryStream:
         re-run the remaining URLs rather than close tabs on a short summary.
         """
         true_count = recount_and_fix_header(self.path)
-        complete = true_count >= self.expected and not self.failed
+        # A search-derived summary with no recorded sources is unverifiable,
+        # so the run is not complete even though every entry landed.
+        complete = (true_count >= self.expected and not self.failed
+                    and not self.provenance_problems)
         trailer = (f"<!-- sweep-stream: emitted={true_count} "
                    f"expected={self.expected} "
                    f"{'complete' if complete else 'partial'} -->")
@@ -1813,6 +1921,7 @@ class SummaryStream:
             "emitted": true_count,
             "expected": self.expected,
             "complete": complete,
+            "provenance_problems": list(self.provenance_problems),
             "failed": list(self.failed),
             "path": str(self.path),
         }
@@ -1836,6 +1945,7 @@ class SummaryStream:
     def _write_index(self, true_count: int, complete: bool) -> dict:
         """Write index.json atomically, with provenance for every entry."""
         doc = {
+            "provenance_problems": list(self.provenance_problems),
             "generated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "run_date": self.run_date,
             "expected": self.expected,
@@ -1856,7 +1966,9 @@ class SummaryStream:
             except OSError:
                 pass
             raise
-        return {"path": str(self.index_path), "entries": len(doc["entries"])}
+        return {"path": str(self.index_path),
+                "entries": len(doc["entries"]),
+                "provenance_problems": list(self.provenance_problems)}
 
 
 def recount_entries(path: Path) -> int:
