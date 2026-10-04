@@ -17,14 +17,14 @@ def _reply(value):
     return lambda msg: {"id": msg.get("id"), "result": {"result": {"value": value}}}
 
 
-CLEAN = {"dirty": False, "fields": []}
+CLEAN = {"dirty": False, "fields": [], "readyState": "complete"}
 DIRTY = {"dirty": True, "fields": ["input.text", "textarea"]}
 
 
 def test_probe_reports_clean_page():
     with FakeWS(_reply(CLEAN)) as s:
         dirty, why = cdp_forms.probe_dirty_form(s.url, timeout=5)
-    assert dirty is False and why == "clean"
+    assert dirty is False and why.startswith("clean")
 
 
 def test_probe_reports_unsaved_input():
@@ -89,3 +89,64 @@ def test_large_payload_round_trips():
     with FakeWS(_reply(big)) as s:
         dirty, _ = cdp_forms.probe_dirty_form(s.url, timeout=5)
     assert dirty is False
+
+
+# --- page-still-loading must not be reported as clean ----------------------
+#
+# Found by testing against a real browser, not by reading the code: while a
+# document is still parsing it has no inputs yet, so the field scan returns an
+# empty result indistinguishable from a genuinely empty form.
+
+def _ready(state, dirty=False):
+    return lambda msg: {"id": msg.get("id"), "result": {"result": {"value": {
+        "dirty": dirty, "fields": ["input.text"] if dirty else [],
+        "readyState": state}}}}
+
+
+def test_still_loading_page_is_not_reported_clean():
+    with FakeWS(_ready("loading")) as s:
+        dirty, why = cdp_forms.probe_dirty_form(s.url, timeout=5)
+    assert dirty is True, "a half-parsed DOM proves nothing about a form"
+    assert "still-loading" in why
+
+
+@pytest.mark.parametrize("state", ["interactive", "complete"])
+def test_settled_pages_are_scanned_normally(state):
+    with FakeWS(_ready(state)) as s:
+        dirty, _ = cdp_forms.probe_dirty_form(s.url, timeout=5)
+    assert dirty is False, f"readyState={state} means the DOM is usable"
+
+
+def test_settled_page_with_input_still_detected():
+    with FakeWS(_ready("interactive", dirty=True)) as s:
+        dirty, why = cdp_forms.probe_dirty_form(s.url, timeout=5)
+    assert dirty is True and "unsaved-input" in why
+
+
+def test_loading_page_with_input_is_reported_as_loading_not_input():
+    """Either verdict skips the close, but the reason must not mislead."""
+    with FakeWS(_ready("loading", dirty=True)) as s:
+        dirty, why = cdp_forms.probe_dirty_form(s.url, timeout=5)
+    assert dirty is True and "still-loading" in why
+
+
+def test_probe_expression_reports_ready_state():
+    """Must assert the code, not the word.
+
+    'readyState' also appears in a comment inside the expression, so a bare
+    substring check passed even after the property was deleted -- the mutant
+    that removes it survived. Pin the exact read instead.
+    """
+    with FakeWS(_ready("complete")) as s:
+        cdp_forms.probe_dirty_form(s.url, timeout=5)
+    expr = s.received[0]["params"]["expression"]
+    assert "readyState: document.readyState" in expr
+    assert "return { dirty:" in expr
+
+
+def test_missing_ready_state_does_not_silently_pass():
+    """An older page that omits the field must not become fail-open."""
+    with FakeWS(lambda m: {"id": m.get("id"), "result": {"result": {"value": {
+                "dirty": False, "fields": [], "readyState": "complete"}}}}) as s:
+        dirty, _ = cdp_forms.probe_dirty_form(s.url, timeout=5)
+    assert dirty is False, "a complete reply without readyState is still usable"

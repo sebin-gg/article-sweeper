@@ -4,6 +4,7 @@ One-off mutation testing tells you a test is good *today*. These guards make
 the protection outlive the person who wrote it: if someone later deletes or
 weakens a safety rule, CI fails instead of the rule quietly disappearing.
 """
+import re
 import sys
 from pathlib import Path
 
@@ -122,3 +123,35 @@ def test_mutation_guard_rejects_a_dirty_tree(tmp_path):
     # On a clean tree it either runs the mutants or reports failures; either
     # way it must never report the "refusing to run" path spuriously.
     assert "dirty tree" not in r.stderr
+
+
+def test_form_guard_is_not_disabled_in_the_close_path():
+    """A stray mutant once left `cdp_close.py` with the form guard off.
+
+    An interrupted mutation-guard run left `if not args.no_form_guard:`
+    rewritten to `if False:` in the working tree. The behavioural tests caught
+    it (3 failures), but only because they happened to run. This pins the
+    source-level property so a disabled guard can never ship quietly.
+    """
+    src = (SCRIPTS / "cdp_close.py").read_text(encoding="utf-8")
+    assert "_probe_dirty_forms(safe, host)" in src, (
+        "cdp_close.py no longer calls the dirty-form probe")
+    assert "if not args.no_form_guard:" in src, (
+        "the form guard call is no longer guarded -- it may have been "
+        "mutated to `if False:` and committed")
+    assert re.search(r"^\s*if False:\s*$", src, re.M) is None or \
+        "probe-failed" in src, (
+        "a bare `if False:` guarding the probe indicates a leftover mutant")
+
+
+def test_mutation_guard_verifies_it_restored_source():
+    """The guard must not trust its own `finally`.
+
+    A run killed by SIGKILL or a harness timeout skips cleanup, so restoration
+    is verified after every mutant and swept again at the end.
+    """
+    src = Path(__file__).with_name("mutation_guard.py").read_text(encoding="utf-8")
+    assert "was not restored" in src, "restoration must be verified, not assumed"
+    assert "source left mutated after the run" in src
+    assert "already modified" in src, (
+        "the guard must refuse to start on a tree left dirty by a killed run")

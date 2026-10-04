@@ -64,7 +64,11 @@ DIRTY_FORM_JS = r"""
   }
   const files = document.querySelectorAll('input[type=file]');
   for (const f of files) { if (f.files && f.files.length) parts.push('input.file'); }
-  return { dirty: parts.length > 0, fields: parts };
+  // readyState is reported so the caller can refuse to conclude "clean" from a
+  // half-parsed DOM. `loading` means the document is still being built and a
+  // form may not exist yet; `interactive` means the DOM is complete and
+  // subresources are still arriving, so the field scan above IS reliable.
+  return { dirty: parts.length > 0, fields: parts, readyState: document.readyState };
 })()
 """
 
@@ -112,7 +116,13 @@ def ws_connect(url: str, timeout: float = 5.0) -> socket.socket:
                 f"handshake rejected: {head.splitlines()[0][:80]}")
         # Verify the accept token: without this a plain HTTP server could
         # answer 101 and we would believe we have a WebSocket.
-        expect = base64.b64encode(hashlib.sha1(
+        # SHA-1 is not a choice here: RFC 6455 s4.2.2 step 5 defines
+        # accept = base64(SHA1(key + GUID)) and the server computes it the
+        # same way, so using anything stronger would break every handshake.
+        # Not used for integrity or signing - it only proves the peer is a
+        # WebSocket endpoint rather than a plain HTTP server.
+        # nosemgrep: python.security.hashlib.insecure-hash-algorithm
+        expect = base64.b64encode(hashlib.sha1(  # noqa: S324
             (key + WS_GUID).encode("ascii")).digest()).decode("ascii")
         got = ""
         for line in head.split("\r\n")[1:]:
@@ -237,10 +247,17 @@ def probe_dirty_form(ws_url: str, *, timeout: float = 5.0) -> tuple[bool, str]:
         value = ((msg.get("result") or {}).get("result") or {}).get("value")
         if not isinstance(value, dict):
             return True, "unparseable Runtime.evaluate result (failing closed)"
+        ready = value.get("readyState")
+        if ready == "loading":
+            # Found by testing against a real browser: a page still parsing
+            # has no inputs yet, so the scan returns an empty result that is
+            # indistinguishable from a genuinely empty form. "No fields" on a
+            # half-built DOM proves nothing, so refuse to conclude clean.
+            return True, "page-still-loading (cannot verify)"
         if value.get("dirty"):
             fields = [str(x) for x in (value.get("fields") or [])][:3]
             return True, "unsaved-input:" + ",".join(fields)
-        return False, "clean"
+        return False, f"clean (readyState={ready})"
     except Exception as exc:  # noqa: BLE001 - failing closed is the point
         return True, f"probe-failed:{type(exc).__name__}:{str(exc)[:60]}"
     finally:

@@ -108,6 +108,14 @@ MUTANTS = [
         None,
     ),
     (
+        "form-guard-accepts-half-parsed-dom",
+        FORMS,
+        '        if ready == "loading":',
+        "        if False:",
+        "cdp_forms",
+        None,
+    ),
+    (
         "form-guard-skipped-entirely",
         CLOSE,
         "    if not args.no_form_guard:",
@@ -131,8 +139,17 @@ def _run(cmd: list[str]) -> int:
                           text=True).returncode
 
 
+def _out(cmd: list[str]) -> str:
+    """stdout of a command. _run() returns only a return code."""
+    return subprocess.run(cmd, cwd=ROOT, capture_output=True,
+                          text=True).stdout
+
+
 def _tree_is_clean() -> bool:
-    return not _run(["git", "status", "--porcelain"])
+    """Only tracked modifications matter. An untracked scratch file is not
+    mutated source and must not block the guard."""
+    return not _out(["git", "status", "--porcelain",
+                     "--untracked-files=no"]).strip()
 
 
 def check_mutant(name, path, old, new, selector, extra) -> tuple[bool, str]:
@@ -148,8 +165,17 @@ def check_mutant(name, path, old, new, selector, extra) -> tuple[bool, str]:
         cmd = [sys.executable, "-m", "pytest", "tests/", "-q", "-x", "-k", selector]
         rc = _run(cmd)
     finally:
-        # Always restore: leaving a mutant behind would be worse than no check.
+        # Always restore: leaving a mutant behind is worse than no check.
         shutil.move(backup.name, str(path))
+
+    if path.read_text(encoding="utf-8") != original:
+        # A killed run (SIGKILL, or a harness timeout) skips `finally` and can
+        # leave production source mutated. That actually happened here: a
+        # background run was cut off mid-mutant and `cdp_close.py` was left
+        # with the form guard disabled. Restoration is verified, not assumed.
+        print(f"FATAL: {path} was not restored; it is still mutated.",
+              file=sys.stderr)
+        raise SystemExit(3)
     if rc == 0:
         return False, "SURVIVED - the selected tests still passed"
     return True, "caught"
@@ -161,9 +187,12 @@ def main() -> int:
                     help="report every result instead of stopping at the first")
     args = ap.parse_args()
 
-    if not _tree_is_clean():
-        print("refusing to run on a dirty tree: mutants are applied in place",
-              file=sys.stderr)
+    dirty = _out(["git", "status", "--porcelain",
+                    "--untracked-files=no"]).strip()
+    if dirty:
+        print("refusing to run: mutants are applied in place, and the tree is "
+              "already modified. A previous run may have been interrupted "
+              "mid-mutant. Stash or commit first.\n" + dirty, file=sys.stderr)
         return 2
 
     print(f"mutation guard: {len(MUTANTS)} mutants\n")
@@ -177,6 +206,12 @@ def main() -> int:
             if not args.keep_going:
                 break
 
+    leftover = _out(["git", "status", "--porcelain",
+                     "--untracked-files=no"]).strip()
+    if leftover:
+        print("\nFATAL: source left mutated after the run:\n" + leftover,
+              file=sys.stderr)
+        return 3
     if survivors:
         print(f"\n{len(survivors)} mutant(s) survived: {survivors}")
         print("These tests no longer discriminate that behaviour.")

@@ -50,7 +50,68 @@ Tests:
   message alongside otherwise-parseable output. Verified it fails against the
   previous behaviour.
 
-## [1.14.0] - 2026-10-04
+## [1.14.1] - 2026-10-04
+
+A page still loading is no longer reported clean.
+
+Fixed:
+
+- The dirty-form probe evaluated a page that may still have been parsing.
+  While `document.readyState === 'loading'` there are no inputs yet, so the
+  field scan returns an empty result **indistinguishable from a genuinely
+  empty form** -- "no fields found" on a half-built DOM proves nothing. The
+  page now reports `readyState`, and `loading` is treated as unverifiable, so
+  the tab is skipped as `page-still-loading (cannot verify)` rather than
+  closed.
+- Only `loading` is refused. `interactive` means the DOM is complete and only
+  subresources are pending, so the field scan is reliable there and is used
+  normally. Gating on anything broader would block ordinary slow-but-parsed
+  pages for no reason.
+
+Verified against a real browser, not only the fake server: Thorium headless
+with a page that holds `readyState` at `loading` via a synchronous XHR during
+parse.
+
+```
+immediately after open : page-still-loading (cannot verify)
+after it settles       : clean (readyState=complete)
+```
+
+A fast page with a filled input still reports `unsaved-input:input.text`.
+
+Tests:
+
+- 366 pass (was 359). 7 new, covering the loading/settled states, a dirty
+  field on an already-parsed page, and the precedence rule that a loading page
+  with input reports the loading reason rather than the input reason.
+- Mutation testing caught a **fourth vacuous test of mine**: the expression
+  check asserted `"readyState" in expression`, but that word also appears in
+  a comment inside the JS, so it passed after the property was deleted. The
+  mutant removing `readyState` survived. Now pinned to the exact read,
+  `readyState: document.readyState`.
+- New mutant in `mutation_guard.py`: accepting a half-parsed DOM. 12 mutants
+  total, all caught.
+
+Also found while verifying this, and fixed in the same PR:
+
+- **A leftover mutant had silently disabled the dirty-form guard.**
+  `cdp_close.py` in the working tree had `if not args.no_form_guard:` rewritten
+  to `if False:`. `main` was never affected -- the change was uncommitted -- but
+  three tests failed for reasons unrelated to the page-loading fix, and the
+  first instinct would have been to blame them.
+- Cause: `mutation_guard.py` applies mutants to real source files. A run
+  killed by a harness timeout skips `finally`, leaving production code
+  mutated. That is the tool I wrote to protect the code, breaking it.
+- Fixed at three levels: restoration is now **verified** after every mutant
+  rather than assumed; the run refuses to start if the tree is already modified
+  and names it as likely leftover; and a final sweep fails loudly if anything
+  is left mutated.
+- `test_form_guard_is_not_disabled_in_the_close_path` pins the source-level
+  property, so a disabled guard cannot ship quietly. Replaying the exact
+  leftover mutant fails it.
+- 368 tests (was 366).
+
+
 
 Search-source recording, with enforcement rather than decoration.
 
