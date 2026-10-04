@@ -50,7 +50,48 @@ Tests:
   message alongside otherwise-parseable output. Verified it fails against the
   previous behaviour.
 
-## [1.12.0] - 2026-10-04
+## [1.13.0] - 2026-10-04
+
+Companion index.json: machine-readable provenance for every entry.
+
+Added:
+
+- `SummaryStream(index_path=...)` writes `index.json` alongside the prose
+  summary. Per entry: `title`, `canonical`, `link`, `domain`, `date`,
+  `tab_ids`, `tab_index`, `source` (`fetch` / `search` / `paywalled`) and
+  `sources_consulted`, plus a run-level block with `generated`, `run_date`,
+  `expected`, `emitted` and `complete`.
+- **Search provenance**: every search-derived entry records the URLs actually
+  consulted. This is the property that makes an unverified summary
+  distinguishable from a fabricated one months later.
+- **Deterministic ordering** by domain, then original tab index, then URL.
+  Completion order would make every run diff against the previous one
+  meaningless; two runs over the same pile now differ only where the pile
+  actually differed.
+
+Design:
+
+- The index is built **in the same pass as the prose entry**, inside
+  `emit()`. It is never produced by re-parsing the `.md` afterwards -- that
+  would create two sources of truth that can silently disagree, which is the
+  failure mode this feature is supposed to prevent.
+- Entries are only recorded if they pass the same schema validation the close
+  gate uses, so a malformed entry is not trusted as a record either, and such
+  a run reports `complete: false`.
+- Written atomically (temp file + `os.replace`), matching `atomic_append()`.
+- `emit()` stays backwards compatible: the old `emit(entry_lines, url=...)`
+  signature still works, with metadata defaulting.
+
+Tests:
+
+- 342 pass (was 332). 10 new in `tests/test_index_json.py`, including the one
+  that matters most: `index.json` and `summary.md` must agree exactly about
+  which articles were filed, verified by parsing both.
+- Four mutants, all caught: completion-order instead of deterministic, dropped
+  search provenance, building the index from the file afterwards instead of
+  in-pass, and unsorted tab ids.
+
+
 
 Dirty-form guard: never close a tab holding unsaved user input.
 

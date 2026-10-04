@@ -4,7 +4,7 @@ description: Summarize open article tabs in Thorium, Chromium, Chrome, Brave, Ed
 license: MIT
 allowed-tools: Bash Read Edit Write Task WebFetch WebSearch
 metadata:
-  version: "1.12.0"
+  version: "1.13.0"
   tags: "browser,tabs,summarize,thorium,chromium,firefox"
 ---
 
@@ -326,13 +326,28 @@ Do not batch the summaries. Write them as they finish:
 ```python
 from sweep_lib import SummaryStream
 
-stream = SummaryStream(summary_path, expected=len(pending))
+stream = SummaryStream(summary_path, expected=len(pending),
+                       index_path=summary_path.with_suffix(".json"))
 for article in as_completed(pending):          # completion order, not list order
-    stream.emit(render_entry(article), url=article["url"])
+    stream.emit(render_entry(article), url=article["url"],
+                title=article["title"], tab_ids=article["tab_ids"],
+                tab_index=article["tab_index"],
+                source=article["source"],                   # fetch|search|paywalled
+                sources_consulted=article.get("consulted", []))
 manifest = stream.finalize()
 if not manifest["complete"]:
     print("short run — re-summarize:", manifest["emitted"], "of", manifest["expected"])
 ```
+
+A companion **`index.json`** is written alongside the prose, in the same pass —
+never by re-parsing the `.md` afterwards, which would give two sources of truth
+that can silently disagree. Per entry it carries `title`, `canonical`, `domain`,
+`date`, `tab_ids`, `source` (`fetch`/`search`/`paywalled`) and
+`sources_consulted`, the URLs actually read for a search-derived summary. That
+last field is what keeps an unverified summary distinguishable from a fabricated
+one a month later. Entries are ordered by domain, then original tab index, so
+two runs over the same pile diff cleanly. Next runs dedupe against this file
+rather than scraping prose.
 
 Each `emit()` is a locked, fsynced append of complete lines, so a crash leaves
 whole entries rather than a torn one, and the header count is reconciled as you
