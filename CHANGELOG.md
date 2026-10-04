@@ -50,7 +50,48 @@ Tests:
   message alongside otherwise-parseable output. Verified it fails against the
   previous behaviour.
 
-## [1.11.1] - 2026-10-04
+## [1.12.0] - 2026-10-04
+
+Dirty-form guard: never close a tab holding unsaved user input.
+
+Added:
+
+- `cdp_forms.py` -- a minimal, dependency-free RFC 6455 WebSocket client,
+  because `Runtime.evaluate` has no HTTP equivalent and this skill must run on
+  a bare Python install. Handshake verifies the `Sec-WebSocket-Accept` token,
+  so a plain HTTP server answering `101` cannot fool it.
+- `probe_dirty_form()` runs one `Runtime.evaluate` per close candidate,
+  checking for non-empty `input`/`textarea`/`contenteditable` plus attached
+  files. Checkboxes, radios and file inputs are excluded -- a checked box is
+  not typed work -- but a single stray character counts, because leaving a tab
+  open costs far less than losing typed work.
+- `cdp_close.py` probes candidates in parallel before closing, and
+  `TabRecord` now carries `webSocketDebuggerUrl` from `/json/list` so the
+  probe reuses the snapshot already revalidated rather than re-fetching.
+- `--no-form-guard` opts out.
+
+Fails closed, deliberately:
+
+- Anything short of a definitive answer -- no websocket URL, refused handshake,
+  bad accept token, timeout, CDP error, unparseable result, probe crash --
+  reports the tab as dirty and skips the close. A guard that silently passes
+  when it cannot see is worse than no guard.
+- The visible cost: on a browser that does not publish
+  `webSocketDebuggerUrl`, this blocks every close until `--no-form-guard` is
+  passed. That is the intended trade, and the flag is the documented escape
+  hatch rather than a silent fallback.
+
+Tests:
+
+- 332 pass (was 313). 19 new: 15 unit tests against a real fake WebSocket
+  server (`tests/fake_ws.py` implements the handshake, masked client frames
+  and ping/pong, so the socket path is exercised rather than mocked), plus
+  4 end-to-end through the CLI with real websockets behind the fake browser.
+- Three new mutants in `mutation_guard.py`: failing open on transport error,
+  ignoring the page's dirty flag, and skipping the guard entirely. All caught;
+  11 mutants total, all caught.
+
+
 
 Make the safety guarantees outlive the person who wrote them.
 

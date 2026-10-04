@@ -38,6 +38,7 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from cdp_forms import probe_dirty_form  # noqa: E402
 from sweep_lib import (  # noqa: E402
     DEFAULT_HOST,
     TabRecord,
@@ -131,6 +132,29 @@ def close_one(host, port, tab_id, timeout=5, *, expect_canonical=None,
         return tab_id, False, str(exc)[:120]
 
 
+def _probe_dirty_forms(tabs, host, timeout=5.0):
+    """Probe each tab for unsaved input, in parallel. Returns {id: reason}.
+
+    Fail-closed: a tab we cannot verify is treated as dirty, so an unreachable
+    or unsupported target is skipped rather than closed on a guess.
+    """
+    if not tabs:
+        return {}
+    out: dict[str, str] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
+        futs = {pool.submit(probe_dirty_form, t.ws_url, timeout=timeout): t
+                for t in tabs}
+        for fut in concurrent.futures.as_completed(futs):
+            tab = futs[fut]
+            try:
+                dirty, why = fut.result()
+            except Exception as exc:  # noqa: BLE001 - unverifiable => skip
+                dirty, why = True, f"probe-crashed:{type(exc).__name__}"
+            if dirty:
+                out[tab.id] = why
+    return out
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("ids_file")
@@ -149,6 +173,10 @@ def main(argv=None):
                          "--user-data-dir) the listening process must show; "
                          "Linux /proc cmdline or Windows image path; fails "
                          "closed when unsupported")
+    ap.add_argument("--no-form-guard", action="store_true",
+                    help="skip the dirty-form probe. The probe fails CLOSED, so "
+                         "on a browser that does not expose websocket URLs "
+                         "this will block every close unless opted out.")
     ap.add_argument("--allow-last-tab", action="store_true",
                     help="permit closing what would leave zero page tabs "
                          "(verified live: Thorium exits the whole browser); "
@@ -268,6 +296,24 @@ def main(argv=None):
         print("nothing safe to close: every candidate is a protected app route",
               file=sys.stderr)
         sys.exit(0)
+
+    # Dirty-form guard. A tab holding unsaved user input is the one loss a
+    # session backup cannot restore, and that state lives inside the page --
+    # the URL and target id look perfectly normal while a half-typed reply is
+    # about to be destroyed. One Runtime.evaluate per close candidate, in
+    # parallel, via the same revalidated snapshot.
+    if not args.no_form_guard:
+        dirty_ids = _probe_dirty_forms(safe, host)
+        if dirty_ids:
+            for tab_id, why in sorted(dirty_ids.items()):
+                print(f"SKIP {tab_id}: {why}")
+            print(f"dirty-form guard skipped {len(dirty_ids)}/{len(safe)}",
+                  file=sys.stderr)
+        safe = [t for t in safe if t.id not in dirty_ids]
+        if not safe:
+            print("nothing safe to close: every candidate holds unsaved input",
+                  file=sys.stderr)
+            sys.exit(0)
 
     unsummarized = [t for t in safe if t.canonical not in sindex]
     for t in unsummarized:

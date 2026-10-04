@@ -4,7 +4,7 @@ description: Summarize open article tabs in Thorium, Chromium, Chrome, Brave, Ed
 license: MIT
 allowed-tools: Bash Read Edit Write Task WebFetch WebSearch
 metadata:
-  version: "1.11.1"
+  version: "1.12.0"
   tags: "browser,tabs,summarize,thorium,chromium,firefox"
 ---
 
@@ -53,7 +53,8 @@ scratch costs most of the setup time, so use these:
 |---|---|---|
 | `scripts/sweep_lib.py` | Deterministic core: URL normalize/dedupe, typed classifier, paywall policy, CDP validation, close revalidation, endpoint identity, atomic append, redaction | import it — never reimplement its rules in prose |
 | `scripts/list_cdp_tabs.py` | List live tabs from a CDP endpoint as JSON | §2 enumerate Chromium-family tabs |
-| `scripts/cdp_close.py` | Close tabs: summary-entry gate, endpoint+browser identity, close-time revalidation, last-page guard | §6 close summarized tabs |
+| `scripts/cdp_forms.py` | Dependency-free CDP WebSocket client + dirty-form probe (fails closed) | §6 close summarized tabs |
+| `scripts/cdp_close.py` | Close tabs: summary-entry gate, never-close blocklist, dirty-form guard, identity revalidation, last-page guard | §6 close summarized tabs |
 | `scripts/decode_firefox_session.py` | Decode a Firefox session copy (`mozLz4`) into tabs | §2 Firefox fallback (needs `lz4`) |
 | `scripts/fetch_articles.py` | Fetch article bodies concurrently (20 wide, 2 per host), returning per-URL outcome plus `--with-text` text, density signals, page title and challenge label | §4 parallel fetch + content refinement |
 
@@ -531,6 +532,15 @@ or navigated since approval (canonical-URL comparison), requires the
 endpoint to answer `/json/version` with the `--browser` product match,
 and confirms each target disappeared afterwards — unverifiable closes
 (list unreachable) count as FAILED with non-zero exit.
+
+**A dirty-form guard also applies.** Before closing, each candidate is probed
+over CDP for unsaved input — a non-empty field, textarea, `contenteditable`,
+or an attached file. Half-typed work is invisible to URL and target-id checks:
+the tab looks completely normal while a reply is about to be destroyed. The
+probe **fails closed** — if it cannot reach a definite answer, the tab is left
+open. On a browser that does not publish `webSocketDebuggerUrl` this blocks
+every close until you pass `--no-form-guard`; that is the intended trade, and
+the flag is a deliberate opt-out rather than a silent fallback.
 
 **A hard never-close blocklist also applies, and it outranks everything.**
 Checkout, cart, payment, billing, login, OAuth, 2FA/MFA/OTP, password reset,
