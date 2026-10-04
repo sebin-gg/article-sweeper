@@ -143,6 +143,33 @@ MUTANTS = [
         None,
     ),
     (
+        # Token batching that ignores the budget is just count batching, which
+        # is the straggler problem this exists to solve.
+        "batching-ignores-token-budget",
+        SWEEP,
+        "        if current and (current_tokens + cost > budget\n"
+        "                        or len(current) >= max(1, int(max_items))):",
+        "        if current and (len(current) >= max(1, int(max_items))):",
+        "batching",
+        None,
+    ),
+    (
+        "batching-hides-oversized-items",
+        SWEEP,
+        "            oversized.append(item)",
+        "            oversized.append(item) if False else None",
+        "batching",
+        None,
+    ),
+    (
+        "batching-drops-per-batch-overhead",
+        SWEEP,
+        "    budget = max(1, int(token_budget) - max(0, int(overhead)))",
+        "    budget = max(1, int(token_budget))",
+        "batching",
+        None,
+    ),
+    (
         "stability-threshold-gate-removed",
         SWEEP,
         "        want = settle_seconds if sig[0] >= min_tabs else settle_small",

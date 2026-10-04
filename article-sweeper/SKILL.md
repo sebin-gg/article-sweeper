@@ -4,7 +4,7 @@ description: Summarize open article tabs in Thorium, Chromium, Chrome, Brave, Ed
 license: MIT
 allowed-tools: Bash Read Edit Write Task WebFetch WebSearch
 metadata:
-  version: "1.18.0"
+  version: "1.19.0"
   tags: "browser,tabs,summarize,thorium,chromium,firefox"
 ---
 
@@ -321,6 +321,24 @@ asking for slower traffic, so the penalty should land on the host that caused
 it rather than on the rest of the sweep. Other hosts are unaffected and keep
 running. This is also why the serialization is worth its cost — it converts one
 host's throttle into a local slowdown instead of a sweep-wide one.
+
+**Size batches by estimated tokens, not by article count.** ~10 Medium posts
+and ~3 Bloomberg pieces are both "a batch" but carry very different context,
+and a batch cannot finish until its slowest member does — so one long article
+leaves the rest of its subagents idle holding context. Pack by budget instead:
+
+```python
+from sweep_lib import plan_token_batches
+
+batches, info = plan_token_batches(pending, token_budget=45_000)
+if info["oversized"]:
+    print(f"{len(info['oversized'])} article(s) exceed the budget; "
+          "each gets its own batch — expect them to be slow")
+```
+
+Ordering is preserved, so batches stay deterministic and a run still diffs
+against the previous one. The estimate is ~4 chars/token — it is a ceiling,
+not a promise.
 
 Do not batch the summaries. Write them as they finish:
 
