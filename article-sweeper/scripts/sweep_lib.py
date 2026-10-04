@@ -17,6 +17,7 @@ import re
 import socket
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -2280,3 +2281,120 @@ def _probe_failure_state(exc: OSError, prior: str | None) -> str | None:
     if prior == "refused":
         return "refused"
     return None
+
+
+# --- stability window -------------------------------------------------------
+
+#: Below this many tabs, session restore is not the bottleneck and the full
+#: settle window is not worth paying. A 4-tab session is not re-creating tabs.
+STABLE_MIN_TABS = 8
+
+#: Settle window once a pile is big enough to be mid-restore.
+STABLE_SETTLE_SECONDS = 2.0
+
+#: Shorter window for a small pile: enough to catch a session obviously still
+#: restoring, without spending two seconds to learn there are four tabs.
+STABLE_SETTLE_SMALL_SECONDS = 0.5
+
+#: Give up waiting after this long. A session that genuinely keeps changing
+#: must not hang the sweep.
+STABLE_TIMEOUT_SECONDS = 20.0
+
+
+def tab_signature(raw) -> tuple[int, frozenset]:
+    """Identity of a tab set for stability comparison.
+
+    The COUNT alone is not enough: one tab can close while another opens and
+    the count stays identical while the set is completely different. Comparing
+    the id set as well catches that.
+    """
+    ids = []
+    for entry in (raw or []):
+        if isinstance(entry, dict):
+            tid = entry.get("id")
+            if isinstance(tid, str) and tid:
+                ids.append(tid)
+    return len(raw or []), frozenset(ids)
+
+
+def wait_for_stable_tabs(fetch, *, endpoint: str = "", browser: str = "",
+                         settle_seconds: float = STABLE_SETTLE_SECONDS,
+                         settle_small: float = STABLE_SETTLE_SMALL_SECONDS,
+                         timeout: float = STABLE_TIMEOUT_SECONDS,
+                         poll: float = 0.25,
+                         min_tabs: int = STABLE_MIN_TABS,
+                         sleep=time.sleep) -> tuple[list[TabRecord], dict]:
+    """Enumerate only once the tab set has stopped changing.
+
+    Session restore re-creates tabs asynchronously. Enumerating during that
+    window yields a *stable but wrong* snapshot, which is worse than a noisy
+    one: every later comparison then looks broken because the baseline was
+    captured mid-restore.
+
+    Polls until the id set (not merely the count) is unchanged for
+    `settle_seconds`, or gives up at `timeout`. A pile smaller than `min_tabs`
+    uses a shorter window, because there is nothing to restore.
+
+    Returns `(records, info)`. `info["stable"]` is False on timeout -- the
+    caller decides whether to proceed or retry, since a moving target is not
+    automatically a reason to abort. Never raises on a fetch failure: it
+    returns the last good snapshot, because a sweep blocked entirely by a
+    blip is worse than a slightly stale baseline.
+    """
+    started = time.monotonic()
+    deadline = started + max(0.0, float(timeout))
+    info = {"stable": False, "waited": 0.0, "samples": 0, "timed_out": False,
+            "settle": settle_seconds, "changes": 0, "reason": ""}
+
+    last_raw, records = None, []
+    prev_sig = None
+    unchanged_since = None
+
+    while True:
+        now = time.monotonic()
+        try:
+            raw = fetch()
+            last_raw = raw
+            records = parse_cdp_list(raw, endpoint=endpoint, browser=browser)
+            info["samples"] += 1
+        except Exception as exc:  # noqa: BLE001 - a blip must not abort
+            info["reason"] = f"fetch-failed:{type(exc).__name__}"
+            sleep(poll)
+            if time.monotonic() >= deadline:
+                info["timed_out"] = True
+                break
+            continue
+
+        sig = tab_signature(raw)
+        # A big pile is the session-restore case; a small one gets the short
+        # window so the sweep is not taxed two seconds for nothing.
+        want = settle_seconds if sig[0] >= min_tabs else settle_small
+        info["settle"] = want
+
+        if prev_sig is None:
+            # First observation establishes the baseline. It is not a change;
+            # counting it would report every settled pile as having churned.
+            prev_sig = sig
+            unchanged_since = now
+        elif sig == prev_sig:
+            if (now - unchanged_since) >= want:
+                info["stable"] = True
+                info["reason"] = f"settled {want}s on {sig[0]} tabs"
+                break
+        else:
+            info["changes"] += 1
+            prev_sig = sig
+            unchanged_since = now
+
+        if now >= deadline:
+            info["timed_out"] = True
+            info["reason"] = (f"timeout after {timeout}s; tab set was still "
+                              f"changing")
+            break
+        sleep(poll)
+
+    info["waited"] = round(time.monotonic() - started, 3)
+    info["tabs"] = len(records)
+    if last_raw is None:
+        records = []
+    return records, info
