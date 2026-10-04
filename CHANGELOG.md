@@ -50,7 +50,57 @@ Tests:
   message alongside otherwise-parseable output. Verified it fails against the
   previous behaviour.
 
-## [1.18.0] - 2026-10-04
+## [1.19.0] - 2026-10-04
+
+Token-sized batching: bound by estimated context, not by article count.
+
+Added:
+
+- `sweep_lib.plan_token_batches(items, token_budget=..., max_items=...,
+  overhead=...)` groups articles into batches bounded by estimated tokens, and
+  returns them plus an info dict (`batches`, `estimated_tokens`,
+  `per_batch_budget`, `oversized`, `max_batch_items`).
+- `estimate_tokens()` -- ~4 chars per token, no tokenizer and no dependency.
+  Deliberately an estimate: it only feeds a ceiling.
+
+Why it is not just a cost saving:
+
+A batch cannot complete until its slowest member does, so one long article
+leaves the rest of the batch's parallel subagents idle while holding their
+context. Measured on 5 Medium posts + 3 long Bloomberg/NYT pieces at a 45k
+budget:
+
+```
+by count (4/batch):  6,000 | 24,000 tokens   -> 18,000 spread
+by token:           30,000 tokens (one batch) ->      0 spread
+```
+
+Design decisions:
+
+- **Deterministic.** Input order is preserved, so the same pile always yields
+  the same batches and a run still diffs against the previous one.
+- **Oversized items are reported, never truncated.** An article exceeding the
+  budget on its own gets its own batch and appears in `info["oversized"]`. It
+  is the straggler that makes the batch slow, and silently capping it would
+  hand the summarizer a partial article.
+- **`max_items` caps a batch of tiny articles**, so a pile of stubs cannot
+  collapse into one enormous batch.
+- **Per-batch overhead is subtracted**, since every batch carries the same
+  instructions.
+
+Tests:
+
+- 428 pass (was 411). 17 new.
+- Two of my tests were wrong first and the corrections are the interesting
+  part: a 4000-char object is only 1000 tokens, so it is not "oversized"; and
+  asserting the token batches beat count batching *on total* is meaningless
+  when everything fits in one batch. What matters is the spread across
+  *multiple* batches, which is what the test now measures with a budget
+  deliberately set below the total.
+- Three new mutants: ignoring the token budget, hiding oversized items,
+  dropping per-batch overhead. 20 mutants total.
+
+
 
 Stability window: enumerate only once the tab set stops changing.
 

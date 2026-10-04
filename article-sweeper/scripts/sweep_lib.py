@@ -2398,3 +2398,99 @@ def wait_for_stable_tabs(fetch, *, endpoint: str = "", browser: str = "",
     if last_raw is None:
         records = []
     return records, info
+
+
+# --- token-sized batching ---------------------------------------------------
+#
+# Batching by article COUNT assumes every article is the same size. They are
+# not: ~10 Medium posts and ~3 Bloomberg pieces are both "a batch" but carry
+# very different context. It is not only cost -- a batch cannot complete until
+# its slowest member does, so one long article leaves nine parallel subagents
+# idle while holding their context.
+#
+# Estimation is approximate by nature. The trade is deliberate: a known count
+# error is replaced by a bounded estimate error, and the budget is a ceiling,
+# not a promise.
+
+#: ~4 characters per token is the usual English-text rule of thumb. Prose runs
+#: a little denser than the naive average, so this errs slightly high.
+CHARS_PER_TOKEN = 4.0
+
+#: Fixed prompt/instruction overhead carried by every batch.
+BATCH_OVERHEAD_TOKENS = 900
+
+#: Never put more than this many articles in one batch, however small they
+#: are. Without it a pile of stubs collapses into one enormous batch.
+MAX_ITEMS_PER_BATCH = 12
+
+
+def estimate_tokens(text: str, chars_per_token: float = CHARS_PER_TOKEN) -> int:
+    """Cheap token estimate. No tokenizer, no dependency, no network.
+
+    Deliberately an estimate: a real tokenizer would be more accurate but
+    costs a dependency this skill does not have, and the number only feeds a
+    ceiling.
+    """
+    if not text:
+        return 0
+    return max(1, int(len(str(text)) / max(0.5, chars_per_token)))
+
+
+def plan_token_batches(items, *, token_budget: int = 60_000,
+                       max_items: int = MAX_ITEMS_PER_BATCH,
+                       overhead: int = BATCH_OVERHEAD_TOKENS,
+                       token_of=None) -> tuple[list[list], dict]:
+    """Group items into batches bounded by estimated tokens.
+
+    Input order is preserved, so the result is deterministic for a given
+    input -- the same pile always yields the same batches, which is what makes
+    a run diffable against the previous one.
+
+    An item that on its own exceeds the budget gets its own batch and is
+    reported in `info["oversized"]`. Splitting it is not this function's job
+    (a summary is written per article), but it MUST be visible: such an item is
+    the straggler that makes the batch slow, and silently capping it would
+    hand the summarizer a truncated article.
+
+    Returns `(batches, info)`.
+    """
+    measure = token_of or (lambda it: estimate_tokens(
+        it.get("text", "") if isinstance(it, dict) else getattr(it, "text", "")))
+    budget = max(1, int(token_budget) - max(0, int(overhead)))
+
+    batches: list[list] = []
+    current: list = []
+    current_tokens = 0
+    oversized: list = []
+    total = 0
+
+    for item in items:
+        cost = int(measure(item) or 0)
+        total += cost
+        if cost > budget:
+            # Its own batch, and reported. Do not silently truncate.
+            oversized.append(item)
+            if current:
+                batches.append(current)
+                current, current_tokens = [], 0
+            batches.append([item])
+            continue
+        if current and (current_tokens + cost > budget
+                        or len(current) >= max(1, int(max_items))):
+            batches.append(current)
+            current, current_tokens = [], 0
+        current.append(item)
+        current_tokens += cost
+    if current:
+        batches.append(current)
+
+    info = {
+        "batches": len(batches),
+        "items": sum(len(b) for b in batches),
+        "estimated_tokens": total,
+        "budget": token_budget,
+        "per_batch_budget": budget,
+        "oversized": oversized,
+        "max_batch_items": max((len(b) for b in batches), default=0),
+    }
+    return batches, info
