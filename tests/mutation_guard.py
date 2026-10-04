@@ -108,6 +108,14 @@ MUTANTS = [
         None,
     ),
     (
+        "form-guard-accepts-half-parsed-dom",
+        FORMS,
+        '        if ready == "loading":',
+        "        if False:",
+        "cdp_forms",
+        None,
+    ),
+    (
         "form-guard-skipped-entirely",
         CLOSE,
         "    if not args.no_form_guard:",
