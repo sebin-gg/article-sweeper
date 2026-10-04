@@ -28,6 +28,7 @@ SCRIPTS = ROOT / "article-sweeper" / "scripts"
 SWEEP = SCRIPTS / "sweep_lib.py"
 CLOSE = SCRIPTS / "cdp_close.py"
 FORMS = SCRIPTS / "cdp_forms.py"
+RULES = SCRIPTS.parent / "rules.json"
 
 # (name, file, old, new, pytest -k selector, [extra paths])
 MUTANTS = [
@@ -121,6 +122,32 @@ MUTANTS = [
         "    if not args.no_form_guard:",
         "    if False:",
         "form_guard",
+        None,
+    ),
+    (
+        # rules.json is supposed to be the source of truth. If a rule can be
+        # edited in Python and still take effect, the file is decoration.
+        "rules-json-ignored-segment-set",
+        SWEEP,
+        'NEVER_CLOSE_SEGMENTS = frozenset(RULES["never_close"]["segments"])',
+        'NEVER_CLOSE_SEGMENTS = frozenset(RULES["never_close"]["segments"]) - {"checkout"}',
+        "rules or never_close",
+        None,
+    ),
+    (
+        "rules-json-ignored-non-article-set",
+        SWEEP,
+        'NON_ARTICLE_SEGMENTS = frozenset(RULES["non_article"]["segments"])',
+        'NON_ARTICLE_SEGMENTS = frozenset(RULES["non_article"]["segments"]) - {"cart"}',
+        "rules or classifier",
+        None,
+    ),
+    (
+        "rules-loader-swallows-missing-file",
+        SWEEP,
+        '    p = Path(path) if path else RULES_PATH',
+        '    p = Path(path) if path and Path(path).exists() else Path("/dev/null")',
+        "rules",
         None,
     ),
     (

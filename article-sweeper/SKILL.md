@@ -4,7 +4,7 @@ description: Summarize open article tabs in Thorium, Chromium, Chrome, Brave, Ed
 license: MIT
 allowed-tools: Bash Read Edit Write Task WebFetch WebSearch
 metadata:
-  version: "1.15.0"
+  version: "1.16.0"
   tags: "browser,tabs,summarize,thorium,chromium,firefox"
 ---
 
@@ -51,6 +51,7 @@ scratch costs most of the setup time, so use these:
 
 | Script | What it does | Use it for |
 |---|---|---|
+| `rules.json` | **Machine-readable classification rules** (blocklist, never-close, paywall, wrappers, hints). Edit here, never in prose | §2 classify |
 | `scripts/sweep_lib.py` | Deterministic core: URL normalize/dedupe, typed classifier, paywall policy, CDP validation, close revalidation, endpoint identity, atomic append, redaction | import it — never reimplement its rules in prose |
 | `scripts/list_cdp_tabs.py` | List live tabs from a CDP endpoint as JSON | §2 enumerate Chromium-family tabs |
 | `scripts/cdp_forms.py` | Dependency-free CDP WebSocket client + dirty-form probe (fails closed) | §6 close summarized tabs |

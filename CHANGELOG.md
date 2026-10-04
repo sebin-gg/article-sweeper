@@ -50,7 +50,45 @@ Tests:
   message alongside otherwise-parseable output. Verified it fails against the
   previous behaviour.
 
-## [1.15.0] - 2026-10-04
+## [1.16.0] - 2026-10-04
+
+Classification rules become a readable, diffable file.
+
+Added:
+
+- `article-sweeper/rules.json` is now the single source of truth for tracking
+  params, sensitive params, wrapper domains, redirect patterns, blocked hosts,
+  internal schemes, article hints, non-article routes, never-close routes,
+  paywalled hosts and blocked statuses.
+- `sweep_lib` compiles them into its constants at import. **Every literal that
+  duplicated a rule was deleted**, so a rule written only in Python is gone on
+  the next import. A PR that changes what gets closed now shows a JSON diff
+  instead of a buried literal.
+- `load_rules()` validates against a declared schema and **fails closed**. It
+  never falls back to built-in defaults: silently using a different rule set
+  than the one on disk would mean closing tabs on rules nobody can see.
+  Patterns compile at load, so a bad regex fails before a sweep rather than
+  halfway through one.
+- `unsure_reasons()` enumerates why a URL lands on `unsure`, so the agent can
+  be handed the ambiguous remainder instead of the whole rule surface.
+
+Verified behaviour-preserving: 263 URLs covering every segment in both segment
+sets, every paywalled host, and the tricky cases classify **identically** to
+main. The values were extracted programmatically from the live module rather
+than retyped, so a typo could not have changed behaviour silently.
+
+Tests:
+
+- 388 pass (was 373). 15 new.
+- An **AST** check that no rule value survives as a string literal in
+  `sweep_lib`. A substring grep was tried first and produced a false positive
+  on `utm_source` inside a docstring; prose explaining a rule is fine, a second
+  copy of the rule is not, so the check reads the AST instead.
+- Three new mutants: dropping a never-close segment, dropping a non-article
+  segment, and making the loader tolerate a missing file. All caught; 15
+  mutants total.
+
+
 
 Tell the operator what to do when the form guard blocks everything.
 
