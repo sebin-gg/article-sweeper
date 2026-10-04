@@ -21,6 +21,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -1704,11 +1705,18 @@ class SummaryStream:
     later cannot lose earlier work.
     """
 
-    def __init__(self, path: Path, expected: int, *, header_extra: str = ""):
+    def __init__(self, path: Path, expected: int, *, header_extra: str = "",
+                 index_path: Path | str | None = None):
         self.path = Path(path)
         self.expected = max(0, int(expected))
         self.emitted = 0
         self.failed: list[str] = []
+        # Companion machine-readable index. Written from the SAME records as
+        # the prose, in the same pass -- never by re-parsing the .md afterwards,
+        # which would give two sources of truth that can silently disagree.
+        self.index_path = Path(index_path) if index_path else None
+        self.run_date = datetime.now(timezone.utc).date().isoformat()
+        self.records: list[dict] = []
         self._ensure_header(header_extra)
 
     def _ensure_header(self, header_extra: str) -> None:
@@ -1727,11 +1735,20 @@ class SummaryStream:
                 f"{header_extra}\n".rstrip() + "\n",
                 encoding="utf-8")
 
-    def emit(self, entry_lines: list[str], *, url: str = "") -> None:
-        """Append one complete entry durably.
+    def emit(self, entry_lines: list[str], *, url: str = "",
+             title: str = "", tab_ids=None, source: str = "fetch",
+             sources_consulted=None, date: str = "", tab_index: int | None = None,
+             **extra) -> None:
+        """Append one complete entry durably and record it for index.json.
 
         Never raises on append failure -- a lost entry must not abort the
         sweep, but it is recorded as failed and makes the run `partial`.
+
+        The index record is built from the same call as the prose entry, so
+        the two cannot drift. `source` records provenance (fetch / search /
+        paywalled); for search-derived entries `sources_consulted` lists the
+        URLs actually read, because months later an unverified summary is
+        otherwise indistinguishable from a fabricated one.
         """
         text = "".join(entry_lines)
         if not text.startswith("## "):
@@ -1742,6 +1759,27 @@ class SummaryStream:
             self.failed.append(f"{url or text[:60]} ({exc})")
             return
         self.emitted += 1
+        if self.index_path is not None:
+            ok, _, link = validate_summary_entry(text)
+            if not ok:
+                # An entry that cannot be schema-valid is not trusted as a
+                # record either; the close gate will refuse it anyway.
+                self.failed.append(f"index: non-schema-valid entry {url or title!r}")
+                return
+            self.records.append({
+                "title": title or text.splitlines()[0][3:].strip(),
+                "canonical": canonicalize_url(link or url),
+                "link": link or url,
+                "domain": (urllib.parse.urlparse(link or url or "").hostname
+                           or "").lower(),
+                "date": date or self.run_date,
+                "tab_ids": sorted(str(x) for x in (tab_ids or [])),
+                "tab_index": tab_index,
+                "source": source,
+                "sources_consulted": sorted(
+                    str(x) for x in (sources_consulted or [])),
+                **extra,
+            })
         # Keep the running count honest so an interrupted run is readable.
         recount_and_fix_header(self.path)
 
@@ -1771,13 +1809,54 @@ class SummaryStream:
                     sep = "\n\n"
                 with open(self.path, "a", encoding="utf-8") as fh:
                     fh.write(sep + trailer + "\n")
-        return {
+        result = {
             "emitted": true_count,
             "expected": self.expected,
             "complete": complete,
             "failed": list(self.failed),
             "path": str(self.path),
         }
+        if self.index_path is not None:
+            result["index"] = self._write_index(true_count, complete)
+        return result
+
+    @staticmethod
+    def _sort_key(rec: dict) -> tuple:
+        """Deterministic order: domain, then original tab index, then URL.
+
+        Completion order would make every run diff against the previous one
+        meaningless. Sorting here means two runs over the same pile differ
+        only where the pile actually differed.
+        """
+        idx = rec.get("tab_index")
+        return (rec.get("domain", ""),
+                idx if isinstance(idx, int) else 1 << 30,
+                rec.get("canonical", ""))
+
+    def _write_index(self, true_count: int, complete: bool) -> dict:
+        """Write index.json atomically, with provenance for every entry."""
+        doc = {
+            "generated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "run_date": self.run_date,
+            "expected": self.expected,
+            "emitted": true_count,
+            "complete": complete,
+            "entries": sorted(self.records, key=self._sort_key),
+        }
+        payload = json.dumps(doc, indent=2, sort_keys=True) + "\n"
+        tmp = tempfile.NamedTemporaryFile(
+            "w", dir=str(self.index_path.parent), delete=False, encoding="utf-8")
+        try:
+            tmp.write(payload)
+            tmp.close()
+            os.replace(tmp.name, str(self.index_path))
+        except BaseException:
+            try:
+                os.unlink(tmp.name)
+            except OSError:
+                pass
+            raise
+        return {"path": str(self.index_path), "entries": len(doc["entries"])}
 
 
 def recount_entries(path: Path) -> int:
