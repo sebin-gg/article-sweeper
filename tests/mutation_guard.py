@@ -139,8 +139,17 @@ def _run(cmd: list[str]) -> int:
                           text=True).returncode
 
 
+def _out(cmd: list[str]) -> str:
+    """stdout of a command. _run() returns only a return code."""
+    return subprocess.run(cmd, cwd=ROOT, capture_output=True,
+                          text=True).stdout
+
+
 def _tree_is_clean() -> bool:
-    return not _run(["git", "status", "--porcelain"])
+    """Only tracked modifications matter. An untracked scratch file is not
+    mutated source and must not block the guard."""
+    return not _out(["git", "status", "--porcelain",
+                     "--untracked-files=no"]).strip()
 
 
 def check_mutant(name, path, old, new, selector, extra) -> tuple[bool, str]:
@@ -178,7 +187,8 @@ def main() -> int:
                     help="report every result instead of stopping at the first")
     args = ap.parse_args()
 
-    dirty = _run(["git", "status", "--porcelain"]).stdout.strip()
+    dirty = _out(["git", "status", "--porcelain",
+                    "--untracked-files=no"]).strip()
     if dirty:
         print("refusing to run: mutants are applied in place, and the tree is "
               "already modified. A previous run may have been interrupted "
@@ -196,7 +206,8 @@ def main() -> int:
             if not args.keep_going:
                 break
 
-    leftover = _run(["git", "status", "--porcelain"]).stdout.strip()
+    leftover = _out(["git", "status", "--porcelain",
+                     "--untracked-files=no"]).strip()
     if leftover:
         print("\nFATAL: source left mutated after the run:\n" + leftover,
               file=sys.stderr)
