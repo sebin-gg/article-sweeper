@@ -42,8 +42,12 @@ sys.path.insert(0, __file__.rsplit("/", 1)[0])
 from sweep_lib import (  # noqa: E402
     FETCH_THEN_SEARCH,
     SKIP_FETCH_TITLE_ONLY,
+    MIN_WORDS,
     content_signals,
+    extract_readable,
     html_to_text,
+    looks_like_challenge,
+    page_title,
     is_blocked_status,
     plan_fetch,
 )
@@ -53,7 +57,11 @@ UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
 
 MAX_BYTES = 4 * 1024 * 1024
 # Cap the text we keep per page; it is for classification, not archival.
-MAX_TEXT_CHARS = 200_000
+# Cap on the text handed to the summarizer. Most summaries need only the top
+# of the piece; uncapped bodies are the largest avoidable prompt cost. Signals
+# are still computed from the FULL extracted text so density is not skewed by
+# the cap.
+MAX_TEXT_CHARS = 16_000
 
 # Per-domain ceiling (customer feedback #4). A single global pool of 20 sends 20
 # concurrent hits at any one host, which is exactly how you collect 429s and
@@ -186,14 +194,34 @@ def fetch_one(url: str, *, timeout: float, allow_search_fallback: bool,
                 }
                 if want_text:
                     # Same request, no extra cost: the body doubles as evidence
-                    # for the still-open `unsure` decision.
+                    # for the still-open `unsure` decision and as summary input.
                     try:
                         raw = body.decode("utf-8", "replace")
-                        out["text"] = html_to_text(raw)[:MAX_TEXT_CHARS]
-                        out["signals"] = content_signals(out["text"])
+                        # Readability pass first; searching is the last resort,
+                        # so a JS-heavy page must be exhausted before that.
+                        readable = extract_readable(raw)
+                        full = readable or html_to_text(raw)
+                        # Signals come from the FULL text: capping first would
+                        # understate word counts and quietly skew density.
+                        out["signals"] = content_signals(full)
+                        out["truncated"] = len(full) > MAX_TEXT_CHARS
+                        out["text"] = full[:MAX_TEXT_CHARS]
+                        # The page's own title beats the CDP-reported one.
+                        out["page_title"] = page_title(raw)
+                        out["html_chars"] = len(raw)
+                        challenged, why = looks_like_challenge(raw, full)
+                        out["challenge"] = why if challenged else ""
+                        # A JS shell yields almost no prose: say so plainly
+                        # instead of handing the summariser a near-empty body.
+                        out["js_shell"] = bool(
+                            out["signals"].get("words", 0) < MIN_WORDS)
                     except Exception:  # noqa: BLE001 - text is best-effort
                         out["text"] = ""
                         out["signals"] = {}
+                        out["truncated"] = False
+                        out["page_title"] = ""
+                        out["challenge"] = ""
+                        out["js_shell"] = False
                 return out
 
         except urllib.error.HTTPError as exc:

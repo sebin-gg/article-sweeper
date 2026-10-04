@@ -5,6 +5,34 @@ semver and match `metadata.version` in SKILL.md frontmatter.
 
 ## [Unreleased]
 
+Added:
+
+- Readability pass before any search fallback (`extract_readable`): structural
+  junk (script/nav/footer/…) is stripped first, then a content-bearing
+  `<article>`/`<main>` container is preferred when present. A JS-heavy page
+  whose article renders into a container is recovered here instead of being
+  written off as an empty shell and sent to search at extra cost.
+- Challenge/gate detection (`looks_like_challenge`): captcha, bot-wall, and
+  subscription-gate interstitials are labelled `challenge:<needle>` instead of
+  being trusted as dense article text. Both the raw HTML and the extracted
+  text are checked, because a bot wall's own markup is the more reliable
+  signal.
+- Page-title recovery (`page_title`): `og:title` then `<title>` from the
+  fetched HTML beats the CDP history title (entities unescaped, whitespace
+  normalised); placeholder titles ("Just a moment", "Human Verification",
+  ALL-CAPS spam) are rejected so they can never be filed as an article title.
+  Exposed as `page_title` on fetch results.
+
+Changed:
+
+- `MAX_TEXT_CHARS` drops from 200 000 to 16 000: the cap now bounds the text
+  handed to the summariser (the largest avoidable prompt cost) instead of the
+  classification input. Classification signals are computed on the FULL
+  extracted text so density is not skewed by the cap; `truncated` records when
+  the body was longer. Fetch results also carry `html_chars`, `challenge`, and
+  `js_shell` (fewer than `MIN_WORDS` words of prose), stated plainly instead
+  of handing the summariser a near-empty body.
+
 Fixed:
 
 - macOS process-ownership proof fails closed. `_darwin_listening_pids` parsed

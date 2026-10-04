@@ -508,3 +508,69 @@ def test_backoff_park_is_released_so_later_urls_proceed(monkeypatch):
     peak = _concurrent_probe(2, urls, max_workers=4)
     assert peak, "probe must observe traffic"
     assert max(peak.values()) <= 2
+
+
+# --- text pipeline: readability, cap, challenge, js_shell ------------------
+
+_ARTICLE_HTML = (
+    "<html><head><title>Tab History Title</title>"
+    '<meta property="og:title" content="Clean Editorial Title"></head>'
+    "<body><nav>Home Archive Contact</nav><main><p>"
+    + " ".join(f"word{i}" for i in range(400))
+    + "</p></main><footer>Copyright boilerplate</footer></body></html>"
+).encode()
+
+
+def _fetch(monkeypatch, body, **kw):
+    monkeypatch.setattr(fetch_articles.urllib.request, "urlopen",
+                        lambda *a, **k: _Resp(body))
+    kw.setdefault("allow_search_fallback", False)
+    return fetch_articles.fetch_one("https://example.com/x", timeout=5,
+                                    want_text=True, **kw)
+
+
+def test_text_fetch_exposes_readability_fields(monkeypatch):
+    out = _fetch(monkeypatch, _ARTICLE_HTML)
+    assert out["status"] == "ok"
+    assert out["page_title"] == "Clean Editorial Title"
+    assert out["challenge"] == ""
+    assert out["truncated"] is False
+    assert out["html_chars"] == len(_ARTICLE_HTML)
+    assert out["js_shell"] is False  # 400 words >= MIN_WORDS
+    assert "Home Archive" not in out["text"]  # nav stripped by readability
+    assert "word0" in out["text"]
+
+
+def test_signals_use_full_text_while_text_is_capped(monkeypatch):
+    words = " ".join(f"word{i}" for i in range(6000))
+    html = f"<html><body><main><p>{words}</p></main></body></html>".encode()
+    out = _fetch(monkeypatch, html)
+    assert out["truncated"] is True
+    assert len(out["text"]) == fetch_articles.MAX_TEXT_CHARS
+    # Signals see the WHOLE body; the capped text would hold fewer words.
+    assert out["signals"]["words"] == 6000
+    assert fetch_articles.content_signals(out["text"])["words"] < 6000
+
+
+def test_challenge_page_is_labelled_and_placeholder_title_rejected(monkeypatch):
+    html = ("<html><head><title>Just a moment</title></head>"
+            "<body><p>Verify you are human to continue. "
+            "Checking your browser.</p></body></html>").encode()
+    out = _fetch(monkeypatch, html)
+    assert out["challenge"].startswith("challenge:")
+    assert out["page_title"] == ""
+
+
+def test_js_shell_page_is_flagged_plainly(monkeypatch):
+    out = _fetch(monkeypatch, b"<html><body><div id='root'></div></body></html>")
+    assert out["js_shell"] is True
+    assert out["signals"]["words"] < fetch_articles.MIN_WORDS
+    assert out["text"] == ""
+
+
+def test_text_fields_absent_when_text_not_requested(monkeypatch):
+    monkeypatch.setattr(fetch_articles.urllib.request, "urlopen",
+                        lambda *a, **k: _Resp(b"body"))
+    out = fetch_articles.fetch_one("https://example.com/x", timeout=5,
+                                   allow_search_fallback=False)
+    assert "text" not in out and "page_title" not in out
