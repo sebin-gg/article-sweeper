@@ -415,13 +415,100 @@ def _host_blocked(host: str) -> bool:
             return True
     return any(s in h for s in BLOCKED_HOST_SUBSTRINGS)
 
+# Segment-anchored on purpose. An unanchored "/cart" also matched
+# "/blog/cartoon-history" and "/mail" matched "/blog/mailman-archive", so real
+# articles on those topics could never be classified -- silently left open
+# forever. Each term must be a whole path segment.
+NON_ARTICLE_SEGMENTS = frozenset({
+    "inbox", "mail", "chat", "chats", "messages", "dashboard", "settings",
+    "account", "billing", "admin", "repo", "repos", "pull", "pulls",
+    "issue", "issues", "pipelines", "actions", "deploy", "checkout", "cart",
+    "login", "signin", "signup", "oauth", "sso", "feeds",
+})
+
 NON_ARTICLE_PATH_RE = re.compile(
-    r"(/inbox|/mail|/chat|/chats|/messages|/feed$|/feeds/|/dashboard|"
-    r"/settings|/account|/billing|/admin|/repos?/|/pulls?/|/issues?/|"
-    r"/pipelines|/actions|/deploy|/checkout|/cart|/login|/signin|/signup|"
-    r"/oauth|/sso|/status$|/healthz)",
+    r"(?:^|/)(?:feed|status|healthz)(?:/|$)"
+    r"|(?:^|/)(?:repos?|pulls?|issues?)(?:/|$)",
     re.I,
 )
+
+# --- hard never-close blocklist ---------------------------------------------
+#
+# Defense in depth for the irreversible step. These are APP ROUTES, not
+# articles: closing one loses in-progress user intent that a session backup
+# cannot restore (a half-filled form, an unsubmitted payment, an unconfirmed
+# 2FA prompt).
+#
+# Deliberately INDEPENDENT of the classifier. The classifier is a heuristic
+# the agent may reasonably override; this list is checked again at close time
+# and cannot be talked out of closing something. Both gates must pass.
+#
+# Matching is on whole path SEGMENTS, never substrings, so a legitimate
+# article slug survives: /blog/how-to-edit-video and /blog/cartoon-history
+# contain "edit"/"cart" but neither segment equals one.
+NEVER_CLOSE_SEGMENTS = frozenset({
+    # auth / identity
+    "oauth", "oauth2", "authorize", "sso", "saml", "login", "signin",
+    "logout", "signup", "register", "auth", "authenticate", "session",
+    "password", "reset", "forgot", "mfa", "2fa", "otp", "totp",
+    "webauthn", "passkey", "recovery",
+    # verification / confirmation -- an unconfirmed 2FA or email-change prompt
+    # is exactly the in-progress state that is lost by closing.
+    "verify", "verification", "confirm", "confirmation", "activate",
+    "activation", "confirm-email", "verify-identity",
+    # money
+    "checkout", "cart", "basket", "bag", "payment", "payments", "billing",
+    "invoice", "subscription", "subscribe", "donate", "order", "orders",
+    "confirm-payment",
+    # editing / creating (unsaved state)
+    "edit", "new", "create", "upload", "compose", "draft", "drafts",
+    "apply", "viewform", "submit", "post-job", "reply", "comment",
+    # account / admin
+    "account", "settings", "preferences", "admin", "dashboard",
+})
+
+
+def _url_path_segments(url: str) -> list[str]:
+    """Lowercased, non-empty path segments. Never raises."""
+    try:
+        path = urllib.parse.urlparse(url or "").path or ""
+    except ValueError:
+        return []
+    return [seg.lower() for seg in path.split("/") if seg]
+
+
+# Compound routes whose meaning is only visible as a multi-segment shape.
+NEVER_CLOSE_PATH_RE = re.compile(
+    r"(?:^|/)two[-_]?factor(?:/|$)"
+    r"|(?:^|/)challenge(?:/|$)"
+    r"|(?:^|/)account/(?:verify|confirm|activate|recover)"
+    r"|(?:^|/)verify[-_]?(?:email|phone|identity)"
+    r"|(?:^|/)i/(?:flow|consent|challenge)"
+    r"|(?:^|/)consent(?:/|$)",
+    re.I,
+)
+
+
+def is_never_close(url: str) -> tuple[bool, str]:
+    """True when this URL must never be closed, whatever the classifier says.
+
+    Returns (blocked, reason). The reason is short and safe to print; the URL
+    itself is redacted by the caller.
+    """
+    if not url:
+        return False, ""
+    if not isinstance(url, str):
+        # A safety gate must never raise on junk input from a malformed dump.
+        url = str(url)
+    segs = _url_path_segments(url)
+    for seg in segs:
+        if seg in NEVER_CLOSE_SEGMENTS:
+            return True, f"never-close-path-segment:{seg}"
+    m = NEVER_CLOSE_PATH_RE.search(url)
+    if m:
+        return True, f"never-close-path:{m.group(0).strip('/').lower()[:24]}"
+    return False, ""
+
 
 INTERNAL_SCHEMES = (
     "devtools://", "chrome://", "chrome-extension://", "edge://",
@@ -456,7 +543,12 @@ def classify_url(url: str, title: str = "") -> tuple[bool, str]:
     host = (p.hostname or "").lower()
     if _host_blocked(host):
         return False, "non-article-host"
-    if NON_ARTICLE_PATH_RE.search(p.path):
+    blocked, why = is_never_close(u)
+    if blocked:
+        # Checked before the softer heuristic list so the reason is precise.
+        return False, why
+    if NON_ARTICLE_PATH_RE.search(p.path) or any(
+            s in NON_ARTICLE_SEGMENTS for s in _url_path_segments(u)):
         return False, "non-article-path"
     if ARTICLE_HINT_RE.search(p.path):
         return True, "article-path-hint"

@@ -1,4 +1,5 @@
 """Behavioral tests for sweep_lib + script CLIs (mocked CDP/Firefox fixtures)."""
+import contextlib
 import json
 import re
 import os
@@ -18,6 +19,7 @@ from sweep_lib import (  # noqa: E402
     extract_readable,
     page_title,
     looks_like_challenge,
+    is_never_close,
     TabRecord,
     atomic_append,
     canonicalize_url,
@@ -2426,3 +2428,148 @@ def test_dense_captcha_page_would_otherwise_pass_density():
     dense = "Please verify you are human. " * 60
     ok, _ = looks_like_challenge(html=dense)
     assert ok, "dense interstitial must still be caught"
+
+
+# --- hard never-close blocklist (defense in depth for the irreversible step)
+
+@pytest.mark.parametrize("path,seg", [
+    ("/checkout", "checkout"), ("/cart", "cart"), ("/oauth/authorize", "oauth"),
+    ("/account/settings", "account"), ("/2fa", "2fa"), ("/verify", "verify"),
+    ("/edit", "edit"), ("/new", "new"), ("/apply", "apply"),
+    ("/viewform", "viewform"), ("/billing/invoices", "billing"),
+    ("/password/reset", "password"), ("/drafts/9", "drafts"),
+    ("/subscribe", "subscribe"),
+])
+def test_never_close_blocks_app_routes(path, seg):
+    ok, why = is_never_close("https://site.example" + path)
+    assert ok and seg in why
+
+
+@pytest.mark.parametrize("path", [
+    "/blog/cartoon-history",          # "cart" is a substring, not a segment
+    "/blog/how-to-edit-video",        # ditto "edit"
+    "/blog/new-york-guide",           # ditto "new"
+    "/news/accountability-report",    # ditto "account"
+    "/posts/2024/verify-your-backup", # ditto "verify"
+    "/blog/settings-of-the-game",     # ditto "settings"
+    "/articles",                      # plain article
+    "/2026/10/03/some-story",
+])
+def test_never_close_does_not_swallow_real_articles(path):
+    """False negatives are safe; false positives silently neuter the tool."""
+    ok, _ = is_never_close("https://site.example" + path)
+    assert not ok, f"{path} is a plausible article and must stay closable"
+
+
+@pytest.mark.parametrize("url", [
+    "https://site.example/account/verify/abc123",
+    "https://site.example/two-factor/auth",
+    "https://site.example/two_factor/setup",
+    "https://site.example/challenge/9",
+    "https://site.example/verify-email",
+    "https://site.example/i/flow",
+    "https://site.example/consent/scopes",
+])
+def test_never_close_catches_compound_routes(url):
+    assert is_never_close(url)[0]
+
+
+def test_never_close_reason_is_safe_to_print():
+    _, why = is_never_close("https://site.example/checkout?card=4111111111111111")
+    assert "4111111111111111" not in why, "reason must not echo query secrets"
+
+
+def test_never_close_handles_garbage_without_raising():
+    for bad in ("", None, "not a url", "://///", "https://", 12345, [], {}):
+        assert is_never_close(bad)[0] is False, f"{bad!r} must not be blocked or raise"
+
+
+def test_classifier_refuses_app_routes():
+    ok, why = classify_url("https://news.example.com/checkout", "Checkout")
+    assert not ok and why.startswith("never-close")
+
+
+def test_classifier_still_allows_article_with_blocked_substring():
+    ok, _ = classify_url("https://news.example.com/blog/cartoon-history", "Cartoon History")
+    assert ok, "substring-only matches must not demote a real article"
+
+
+@contextlib.contextmanager
+def _blocklist_cli(tmp_path, live_tabs, ids, summary_urls):
+    """Run cdp_close with the server LIVE, yielding (cdp, result).
+
+    The server must be started before the CLI runs; a helper that builds the
+    fake and closes over it without entering it makes every "was not closed"
+    assertion pass vacuously.
+    """
+    tabs = {k: {"id": k, "type": "page", "url": u, "title": k}
+            for k, u in live_tabs.items()}
+    with FakeCDP("Chrome/140.0.0.0", tabs) as cdp:
+        exp = tmp_path / "expect.json"
+        cdp.dump_list(exp)
+        idf = tmp_path / "ids.txt"
+        idf.write_text("\n".join(ids) + "\n", encoding="utf-8")
+        summ = tmp_path / "summary.md"
+        write_summary(summ, summary_urls if summary_urls is not None
+                      else list(live_tabs.values()))
+        r = run("cdp_close.py", str(idf), "--host", "127.0.0.1",
+                "--port", str(cdp.port), "--expect", str(exp),
+                "--browser", "chrome", "--summary", str(summ))
+        yield cdp, r
+
+
+@pytest.mark.parametrize("url", [
+    "https://shop.example/checkout",
+    "https://shop.example/cart",
+    "https://id.example/2fa",
+    "https://docs.example/edit/42",
+    "https://job.example/apply",
+    "https://bank.example/account/verify/9",
+])
+def test_blocklist_holds_even_with_a_valid_summary_entry(tmp_path, url):
+    """The gate is independent: a summary entry must not unlock an app route."""
+    with _blocklist_cli(tmp_path,
+                        {"A": url, "B": "https://news.example/ok"},
+                        ["A", "B"], None) as (cdp, r):
+        assert cdp.closed_puts != [], "the control tab must close, or this test is void"
+        assert "B" in cdp.closed_puts
+        assert "A" not in cdp.closed_puts, f"{url} must never close"
+        assert "A" in cdp.tabs
+        assert "never-close" in (r.stdout + r.stderr)
+
+
+def test_blocklist_does_not_block_real_articles(tmp_path):
+    # Z is a bystander so the last-page guard is satisfied; it is deliberately
+    # not in the summary, so it must survive the summary gate too.
+    with _blocklist_cli(tmp_path,
+                        {"A": "https://news.example/blog/cartoon-history",
+                         "B": "https://news.example/blog/how-to-edit-video",
+                         "C": "https://news.example/blog/mailman-archive",
+                         "Z": "https://news.example/"},
+                        ["A", "B", "C"],
+                        ["https://news.example/blog/cartoon-history",
+                         "https://news.example/blog/how-to-edit-video",
+                         "https://news.example/blog/mailman-archive",
+                         "https://news.example/"]) as (cdp, _):
+        assert sorted(cdp.closed_puts) == ["A", "B", "C"], (
+            "substring-matching would silently neuter the whole tool")
+
+
+def test_blocklist_and_summary_gate_both_apply(tmp_path):
+    """Two independent gates: neither one alone is the authority."""
+    tabs = {"A": "https://shop.example/checkout",   # blocked by path
+            "B": "https://news.example/real"}          # blocked by missing entry
+    with FakeCDP("Chrome/140.0.0.0", {k: {"id": k, "type": "page", "url": u,
+                                         "title": k} for k, u in tabs.items()}) as cdp:
+        exp = tmp_path / "expect.json"
+        cdp.dump_list(exp)
+        idf = tmp_path / "ids.txt"
+        idf.write_text("A\nB\n", encoding="utf-8")
+        summ = tmp_path / "summary.md"
+        write_summary(summ, ["https://shop.example/checkout"])  # authorizes A only
+        r = run("cdp_close.py", str(idf), "--host", "127.0.0.1",
+                "--port", str(cdp.port), "--expect", str(exp),
+                "--browser", "chrome", "--summary", str(summ))
+        assert cdp.closed_puts == [], "neither tab may close"
+        assert "never-close" in (r.stdout + r.stderr)
+        assert "no schema-valid summary entry" in (r.stdout + r.stderr)

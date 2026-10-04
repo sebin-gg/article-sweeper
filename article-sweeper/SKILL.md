@@ -4,7 +4,7 @@ description: Summarize open article tabs in Thorium, Chromium, Chrome, Brave, Ed
 license: MIT
 allowed-tools: Bash Read Edit Write Task WebFetch WebSearch
 metadata:
-  version: "1.10.1"
+  version: "1.11.0"
   tags: "browser,tabs,summarize,thorium,chromium,firefox"
 ---
 
@@ -524,6 +524,17 @@ or navigated since approval (canonical-URL comparison), requires the
 endpoint to answer `/json/version` with the `--browser` product match,
 and confirms each target disappeared afterwards — unverifiable closes
 (list unreachable) count as FAILED with non-zero exit.
+
+**A hard never-close blocklist also applies, and it outranks everything.**
+Checkout, cart, payment, billing, login, OAuth, 2FA/MFA/OTP, password reset,
+`/edit`, `/new`, `/upload`, `/draft`, `/apply`, `/viewform`, account settings,
+and verification/confirm/activate prompts are never closed — not even with a
+valid summary entry, and not even if you judged them articles yourself. A
+half-filled form or an unconfirmed 2FA prompt is the one loss a session backup
+cannot undo. Matching is on whole path segments, so `/blog/cartoon-history`
+and `/blog/how-to-edit-video` are still fair game. This is checked in
+`classify_url()` and again at close time; the close-time check is the one that
+matters.
 
 **`--summary` is required, and it is the close gate.** A tab closes only if
 its exact canonical URL has an entry in the summary file, and that entry is

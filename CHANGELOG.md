@@ -50,6 +50,53 @@ Tests:
   message alongside otherwise-parseable output. Verified it fails against the
   previous behaviour.
 
+## [1.11.0] - 2026-10-04
+
+Hard never-close blocklist, and a real substring bug in the classifier.
+
+Added:
+
+- `sweep_lib.is_never_close()` and a `NEVER_CLOSE_SEGMENTS` set covering app
+  routes: auth/identity (oauth, login, 2fa, mfa, otp, webauthn, passkey,
+  recovery), money (checkout, cart, payment, billing, subscribe), unsaved
+  state (edit, new, upload, compose, draft, apply, viewform), account/admin,
+  and verification/confirm/activate prompts.
+- Applied in **two independent places**. `classify_url()` refuses them as
+  article candidates, and `cdp_close.py` re-checks at close time. The second
+  gate cannot be talked out of it: a schema-valid summary entry does not
+  unlock a tab on `/checkout`. Both gates must pass.
+- Compound routes matched as multi-segment shapes too: `/two-factor`,
+  `/challenge`, `/account/verify/...`, `/verify-email`, `/i/flow`, `/consent`.
+
+Fixed:
+
+- **A real substring bug in the pre-existing classifier.** `NON_ARTICLE_PATH_RE`
+  was unanchored, so `/cart` matched `/blog/cartoon-history` and `/mail`
+  matched `/blog/mailman-archive`. Articles on those topics could never be
+  classified and were silently left open forever. Now segment-matched.
+- `is_never_close()` raised `AttributeError` on non-string input from a
+  malformed dump. A safety gate must never raise on junk.
+
+Notes:
+
+- Matching is on whole path **segments**, never substrings. `/blog/cartoon-
+  history`, `/blog/how-to-edit-video`, `/blog/mailman-archive` and
+  `/posts/2024/10/verify-your-backup` all stay closable; a substring blocklist
+  would silently neuter the entire tool.
+- The blocklist reason never echoes the query string, so a URL like
+  `/checkout?card=4111...` cannot leak a card number into stderr.
+
+Tests:
+
+- 41 new tests, 278 pass, mutation-tested. Substring matching fails 8,
+  disabling the blocklist fails 21, and removing the close-time gate fails 7 --
+  the last being the one that matters, since it is the only proof that the
+  gate is genuinely independent of the classifier.
+- Two of my own test bugs caught by mutation and by the last-page guard: a
+  helper that built the fake CDP server without entering it, making every
+  "was not closed" assertion pass vacuously; and a test that requested every
+  page tab, which the last-page guard correctly refused.
+
 ## [1.10.1] - 2026-10-04
 
 Two title-parsing bugs found while testing #14, plus the coverage that finds

@@ -44,6 +44,7 @@ from sweep_lib import (  # noqa: E402
     cdp_url,
     confirm_endpoint,
     endpoint_gone_confirmed,
+    is_never_close,
     last_page_guard,
     parse_cdp_list,
     parse_summary_file,
@@ -250,6 +251,24 @@ def main(argv=None):
     # schema-valid entry is not closable, no matter how it got into the close
     # set. Matching is on the canonical URL, so a Link: written in a cleaner
     # form than the tab's own URL still matches.
+    # Hard never-close blocklist. This runs BEFORE and independently of the
+    # summary gate: a tab on an app route (checkout, 2FA prompt, an edit form
+    # with unsaved input) is never closed, even when it has a schema-valid
+    # summary entry and the classifier called it an article. Losing a half-
+    # filled form is the one loss a session backup cannot undo.
+    app_routes = [t for t in safe if is_never_close(t.url)[0]]
+    for t in app_routes:
+        print(f"SKIP {t.id}: {is_never_close(t.url)[1]} "
+              f"({redact_url(t.url)})")
+    if app_routes:
+        print(f"never-close blocklist skipped {len(app_routes)}/{len(candidates)}",
+              file=sys.stderr)
+    safe = [t for t in safe if not is_never_close(t.url)[0]]
+    if not safe:
+        print("nothing safe to close: every candidate is a protected app route",
+              file=sys.stderr)
+        sys.exit(0)
+
     unsummarized = [t for t in safe if t.canonical not in sindex]
     for t in unsummarized:
         print(f"SKIP {t.id}: no schema-valid summary entry for "
