@@ -167,12 +167,132 @@ def wait_for_endpoint(host: str, port: int, *, expect_browser: str = "",
 #: Deliberately conservative: generic names like `ref`, `referrer`, `spm`
 #: are NOT here — they are meaningful on some sites (section refs, vendor
 #: params), and dropping them would falsely merge distinct articles.
-TRACKING_PARAMS = frozenset({
-    "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
-    "utm_id", "gclid", "gbraid", "wbraid", "fbclid", "msclkid", "mc_cid",
-    "mc_eid", "igshid", "_hsenc", "_hsmi",
-    "srsltid", "vero_conv", "vero_id", "yclid", "ttclid",
-})
+
+# --- rules.json: single source of truth ------------------------------------
+#
+# Classification rules live in rules.json, not in prose and not as literals
+# scattered through this module. Three reasons:
+#   * diffable -- a PR that changes what gets closed shows a JSON diff
+#   * testable -- rules can be enumerated and checked, not just read
+#   * model-readable -- the agent can read the rules instead of guessing
+#
+# The constants below are COMPILED from rules.json at import. A rule written
+# only in Python is simply gone on the next import: that is the point.
+
+RULES_PATH = Path(__file__).resolve().parents[1] / "rules.json"
+
+RULES_SCHEMA: dict = {
+    "version": int,
+    "tracking_params": list,
+    "tracking_prefixes": list,
+    "sensitive_params": list,
+    "wrapper_domains": list,
+    "redirect": dict,
+    "blocked_hosts": dict,
+    "internal_schemes": list,
+    "article_hints": dict,
+    "non_article": dict,
+    "never_close": dict,
+    "paywalled_hosts": list,
+    "blocked_status": list,
+    "strong_article_reasons": list,
+}
+
+
+class RulesError(ValueError):
+    """rules.json is missing, malformed, or incomplete. Always fail closed."""
+
+
+def unsure_reasons() -> list[str]:
+    """Why a URL would land on `unsure`, straight from the rules file.
+
+    The agent only needs to reason about what the heuristics could not settle.
+    This makes that set explicit and enumerable instead of something to be
+    inferred from the code, so the model is handed the ambiguous remainder
+    rather than the whole rule surface.
+    """
+    r = RULES
+    return [
+        "weak-signal: no title, host and path both unremarkable",
+        "non-article-path: path matches a non-article route",
+        "blocked-host: host is on the blocklist",
+        "paywalled-host: fetch is blocked, body unavailable",
+        "duplicate-of: another tab already carries this canonical URL",
+        "js-shell: body rendered client-side, no prose to measure",
+        "challenge: bot wall or subscription gate, not an article",
+        "thin-content: body under the article word floor",
+    ]
+
+
+def load_rules(path=None) -> dict:
+    """Load and validate rules.json.
+
+    Raises RulesError rather than falling back to built-in defaults: silently
+    using a different rule set than the one on disk would mean closing tabs on
+    rules nobody can see. Fail closed, loudly.
+    """
+    p = Path(path) if path else RULES_PATH
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise RulesError(f"rules file not found: {p}") from exc
+    except json.JSONDecodeError as exc:
+        raise RulesError(f"{p} is not valid JSON: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise RulesError(f"{p}: top level must be an object")
+
+    problems = []
+    for key, want in RULES_SCHEMA.items():
+        if key not in raw:
+            problems.append(f"missing {key!r}")
+        elif not isinstance(raw[key], want) or isinstance(raw[key], bool):
+            name = (want.__name__ if isinstance(want, type)
+                    else "/".join(w.__name__ for w in want))
+            problems.append(f"{key!r} must be {name}, got "
+                            f"{type(raw[key]).__name__}")
+    for group in ("non_article", "never_close"):
+        if isinstance(raw.get(group), dict):
+            for key in ("segments", "path_patterns"):
+                if not isinstance(raw[group].get(key), list):
+                    problems.append(f"{group}.{key} must be a list")
+    if problems:
+        raise RulesError(f"{p} is invalid:\n  - " + "\n  - ".join(problems))
+
+    # Compile patterns once, so a bad regex is a load error rather than a
+    # surprise halfway through a sweep.
+    pats = [("non_article", p_) for p_ in raw["non_article"]["path_patterns"]]
+    pats += [("never_close", p_) for p_ in raw["never_close"]["path_patterns"]]
+    pats.append(("article_hints", raw["article_hints"]["path_pattern"]))
+    for group, pat in pats:
+        try:
+            re.compile(pat, re.I)
+        except re.error as exc:
+            raise RulesError(f"{group}: bad regex {pat!r}: {exc}") from exc
+    return raw
+
+
+RULES = load_rules()
+
+TRACKING_PARAMS = frozenset(RULES["tracking_params"])
+TRACKING_PREFIXES = tuple(RULES["tracking_prefixes"])
+SENSITIVE_PARAMS = frozenset(RULES["sensitive_params"])
+WRAPPER_DOMAINS = tuple(RULES["wrapper_domains"])
+REDIRECT_PATH_RE = re.compile(RULES["redirect"]["path_pattern"], re.I)
+REDIRECT_PARAMS = tuple(RULES["redirect"]["query_params"])
+BLOCKED_HOST_EXACT_OR_SUFFIX = frozenset(RULES["blocked_hosts"]["exact_or_suffix"])
+BLOCKED_HOST_PREFIXES = tuple(RULES["blocked_hosts"]["prefixes"])
+BLOCKED_HOST_SUBSTRINGS = tuple(RULES["blocked_hosts"]["substrings"])
+BLOCKED_HOST_LITERALS = tuple(RULES["blocked_hosts"]["literals"])
+BLOCK_RAW_IPS = bool(RULES["blocked_hosts"]["raw_ip_is_blocked"])
+INTERNAL_SCHEMES = tuple(RULES["internal_schemes"])
+ARTICLE_HINT_RE = re.compile(RULES["article_hints"]["path_pattern"], re.I)
+NON_ARTICLE_SEGMENTS = frozenset(RULES["non_article"]["segments"])
+NON_ARTICLE_PATH_RE = re.compile(RULES["non_article"]["path_patterns"][0], re.I)
+NEVER_CLOSE_SEGMENTS = frozenset(RULES["never_close"]["segments"])
+NEVER_CLOSE_PATH_RE = re.compile(RULES["never_close"]["path_patterns"][0], re.I)
+PAYWALLED_HOSTS = frozenset(RULES["paywalled_hosts"])
+BLOCKED_STATUS = frozenset(RULES["blocked_status"])
+STRONG_ARTICLE_REASONS = frozenset(RULES["strong_article_reasons"])
 
 
 def _is_tracking_param(name: str) -> bool:
@@ -181,32 +301,12 @@ def _is_tracking_param(name: str) -> bool:
     return low in TRACKING_PARAMS or low.startswith("utm_")
 
 #: Query params that must never appear in logs/scratch (tokens, invites).
-SENSITIVE_PARAMS = frozenset({
-    "token", "auth", "auth_token", "access_token", "id_token", "session",
-    "sessionid", "session_id", "key", "api_key", "apikey", "secret",
-    "password", "passwd", "invite", "invite_code", "code", "state",
-    "sig", "signature", "token_type", "bearer",
-})
-
-WRAPPER_DOMAINS = (
-    "google.com", "www.google.com",
-    "tracking.tldrnewsletter.com", "tracking.inflection.io",
-)
-
 #: Path shapes that mark a URL as a redirect endpoint (as opposed to an
 #: article that merely carries a `url=`-style parameter). The generic
 #: redirect-param scan below ONLY runs for WRAPPER_DOMAINS or these paths,
 #: so `https://example.com/article?url=https://other.com` is never
 #: rewritten. `lmu…` covers kit-mail click-tracking paths.
-REDIRECT_PATH_RE = re.compile(
-    r"/(url|redirect|redir|r|l|click|track/click|CL0|lmu\w*)(/|$|\?)",
-    re.I,
-)
-
 #: Param names that may carry a redirect target on a redirect endpoint.
-REDIRECT_PARAMS = ("u", "url", "redirect", "dest", "destination", "to")
-
-
 def unwrap_tracking_wrapper(url: str) -> str:
     """Unwrap known redirect/tracking wrappers deterministically.
 
@@ -378,36 +478,19 @@ def redact_record(rec: dict) -> dict:
 # Host blocklist: matched against the hostname with dot boundaries (exact
 # or subdomain-suffix), never by raw substring — otherwise "ex.com" would
 # falsely match an "x.com" rule.
-BLOCKED_HOST_EXACT_OR_SUFFIX = frozenset({
-    "github.com", "gitlab.com", "bitbucket.org",
-    "facebook.com", "twitter.com", "x.com", "instagram.com", "tiktok.com",
-    "linkedin.com", "reddit.com",
-    "outlook.com", "outlook.office.com", "teams.microsoft.com",
-    "slack.com", "discord.com", "zoom.us",
-    "paypal.com",
-})
-BLOCKED_HOST_PREFIXES = (
-    "mail.google.", "outlook.", "teams.", "slack.", "discord.",
-    "meet.google", "calendar.google", "drive.google", "sheets.",
-    "slides.", "accounts.google", "login.", "auth.", "sso.",
-    "grafana.", "kibana.", "jira.", "linear.", "asana.", "trello.",
-    "notion.",
-)
-BLOCKED_HOST_SUBSTRINGS = ("pornhub", "xnxx", "xvideos", "bank")
-
-
 def _host_blocked(host: str) -> bool:
     h = (host or "").lower().rstrip(".")
     if not h:
         return False
-    if h in ("localhost",):
+    if h in BLOCKED_HOST_LITERALS:
         return True
-    try:
-        import ipaddress
-        ipaddress.ip_address(h)
-        return True  # raw IPs (incl. 127.0.0.1) are app/local, not articles
-    except ValueError:
-        pass
+    if BLOCK_RAW_IPS:
+        try:
+            import ipaddress
+            ipaddress.ip_address(h)
+            return True  # raw IPs (incl. 127.0.0.1) are app/local, not articles
+        except ValueError:
+            pass
     for b in BLOCKED_HOST_EXACT_OR_SUFFIX:
         if h == b or h.endswith("." + b):
             return True
@@ -420,19 +503,6 @@ def _host_blocked(host: str) -> bool:
 # "/blog/cartoon-history" and "/mail" matched "/blog/mailman-archive", so real
 # articles on those topics could never be classified -- silently left open
 # forever. Each term must be a whole path segment.
-NON_ARTICLE_SEGMENTS = frozenset({
-    "inbox", "mail", "chat", "chats", "messages", "dashboard", "settings",
-    "account", "billing", "admin", "repo", "repos", "pull", "pulls",
-    "issue", "issues", "pipelines", "actions", "deploy", "checkout", "cart",
-    "login", "signin", "signup", "oauth", "sso", "feeds",
-})
-
-NON_ARTICLE_PATH_RE = re.compile(
-    r"(?:^|/)(?:feed|status|healthz)(?:/|$)"
-    r"|(?:^|/)(?:repos?|pulls?|issues?)(?:/|$)",
-    re.I,
-)
-
 # --- hard never-close blocklist ---------------------------------------------
 #
 # Defense in depth for the irreversible step. These are APP ROUTES, not
@@ -447,28 +517,6 @@ NON_ARTICLE_PATH_RE = re.compile(
 # Matching is on whole path SEGMENTS, never substrings, so a legitimate
 # article slug survives: /blog/how-to-edit-video and /blog/cartoon-history
 # contain "edit"/"cart" but neither segment equals one.
-NEVER_CLOSE_SEGMENTS = frozenset({
-    # auth / identity
-    "oauth", "oauth2", "authorize", "sso", "saml", "login", "signin",
-    "logout", "signup", "register", "auth", "authenticate", "session",
-    "password", "reset", "forgot", "mfa", "2fa", "otp", "totp",
-    "webauthn", "passkey", "recovery",
-    # verification / confirmation -- an unconfirmed 2FA or email-change prompt
-    # is exactly the in-progress state that is lost by closing.
-    "verify", "verification", "confirm", "confirmation", "activate",
-    "activation", "confirm-email", "verify-identity",
-    # money
-    "checkout", "cart", "basket", "bag", "payment", "payments", "billing",
-    "invoice", "subscription", "subscribe", "donate", "order", "orders",
-    "confirm-payment",
-    # editing / creating (unsaved state)
-    "edit", "new", "create", "upload", "compose", "draft", "drafts",
-    "apply", "viewform", "submit", "post-job", "reply", "comment",
-    # account / admin
-    "account", "settings", "preferences", "admin", "dashboard",
-})
-
-
 def _url_path_segments(url: str) -> list[str]:
     """Lowercased, non-empty path segments. Never raises."""
     try:
@@ -479,17 +527,6 @@ def _url_path_segments(url: str) -> list[str]:
 
 
 # Compound routes whose meaning is only visible as a multi-segment shape.
-NEVER_CLOSE_PATH_RE = re.compile(
-    r"(?:^|/)two[-_]?factor(?:/|$)"
-    r"|(?:^|/)challenge(?:/|$)"
-    r"|(?:^|/)account/(?:verify|confirm|activate|recover)"
-    r"|(?:^|/)verify[-_]?(?:email|phone|identity)"
-    r"|(?:^|/)i/(?:flow|consent|challenge)"
-    r"|(?:^|/)consent(?:/|$)",
-    re.I,
-)
-
-
 def is_never_close(url: str) -> tuple[bool, str]:
     """True when this URL must never be closed, whatever the classifier says.
 
@@ -509,19 +546,6 @@ def is_never_close(url: str) -> tuple[bool, str]:
     if m:
         return True, f"never-close-path:{m.group(0).strip('/').lower()[:24]}"
     return False, ""
-
-
-INTERNAL_SCHEMES = (
-    "devtools://", "chrome://", "chrome-extension://", "edge://",
-    "brave://", "opera://", "vivaldi://", "about:", "view-source:",
-)
-
-ARTICLE_HINT_RE = re.compile(
-    r"(/blog/|/blogs/|/news/|/articles?/|/posts?/|/stories?/|/docs?/|"
-    r"/tutorials?/|/guides?/|/papers?/|/releases?/|/changelog|/wiki/|"
-    r"/20\d\d/\d\d/|/p/|/story/|/essays?/)",
-    re.I,
-)
 
 
 def classify_url(url: str, title: str = "") -> tuple[bool, str]:
@@ -578,9 +602,6 @@ DUPLICATE_OF = "duplicate-of"
 UNSURE = "unsure"
 
 # Only these reasons are strong enough to authorize a close on their own.
-STRONG_ARTICLE_REASONS = frozenset({"article-path-hint", "user-named"})
-
-
 @dataclass(frozen=True)
 class TabDecision:
     """Typed, auditable decision for one tab. No prose anywhere."""
@@ -678,17 +699,7 @@ def classify_tabs_typed(
 # Paywall / blocked-host policy (customer feedback #4 and #5)
 # ---------------------------------------------------------------------------
 
-PAYWALLED_HOSTS = frozenset({
-    "medium.com", "nytimes.com", "wsj.com", "bloomberg.com",
-    "theatlantic.com", "economist.com", "ft.com", "washingtonpost.com",
-    "newyorker.com", "sfgate.com", "seattletimes.com", "bostonglobe.com",
-    "chicagotribune.com", "latimes.com", "telegraph.co.uk", "thetimes.co.uk",
-    "wsj.eu", "arstechnica.com", "techcrunch.com", "wired.com",
-})
-
 # Statuses meaning "the publisher refused", not "the page moved".
-BLOCKED_STATUS = frozenset({401, 402, 403, 451})
-
 SKIP_FETCH_TITLE_ONLY = "skip-fetch-title-only"
 FETCH_THEN_SEARCH = "fetch-then-search-on-block"
 FETCH = "fetch"
