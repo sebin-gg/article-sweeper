@@ -50,7 +50,49 @@ Tests:
   message alongside otherwise-parseable output. Verified it fails against the
   previous behaviour.
 
-## [1.14.0] - 2026-10-04
+## [1.14.1] - 2026-10-04
+
+A page still loading is no longer reported clean.
+
+Fixed:
+
+- The dirty-form probe evaluated a page that may still have been parsing.
+  While `document.readyState === 'loading'` there are no inputs yet, so the
+  field scan returns an empty result **indistinguishable from a genuinely
+  empty form** -- "no fields found" on a half-built DOM proves nothing. The
+  page now reports `readyState`, and `loading` is treated as unverifiable, so
+  the tab is skipped as `page-still-loading (cannot verify)` rather than
+  closed.
+- Only `loading` is refused. `interactive` means the DOM is complete and only
+  subresources are pending, so the field scan is reliable there and is used
+  normally. Gating on anything broader would block ordinary slow-but-parsed
+  pages for no reason.
+
+Verified against a real browser, not only the fake server: Thorium headless
+with a page that holds `readyState` at `loading` via a synchronous XHR during
+parse.
+
+```
+immediately after open : page-still-loading (cannot verify)
+after it settles       : clean (readyState=complete)
+```
+
+A fast page with a filled input still reports `unsaved-input:input.text`.
+
+Tests:
+
+- 366 pass (was 359). 7 new, covering the loading/settled states, a dirty
+  field on an already-parsed page, and the precedence rule that a loading page
+  with input reports the loading reason rather than the input reason.
+- Mutation testing caught a **fourth vacuous test of mine**: the expression
+  check asserted `"readyState" in expression`, but that word also appears in
+  a comment inside the JS, so it passed after the property was deleted. The
+  mutant removing `readyState` survived. Now pinned to the exact read,
+  `readyState: document.readyState`.
+- New mutant in `mutation_guard.py`: accepting a half-parsed DOM. 12 mutants
+  total, all caught.
+
+
 
 Search-source recording, with enforcement rather than decoration.
 
