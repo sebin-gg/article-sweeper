@@ -27,6 +27,7 @@ SCRIPTS = ROOT / "article-sweeper" / "scripts"
 
 SWEEP = SCRIPTS / "sweep_lib.py"
 CLOSE = SCRIPTS / "cdp_close.py"
+FORMS = SCRIPTS / "cdp_forms.py"
 
 # (name, file, old, new, pytest -k selector, [extra paths])
 MUTANTS = [
@@ -87,6 +88,31 @@ MUTANTS = [
         "    if _PLACEHOLDER_TITLE_RE.match(text.strip().rstrip(\". \")):",
         "    if False:",
         "page_title or placeholder",
+        None,
+    ),
+    (
+        # The fail-closed property is the whole point of the dirty-form guard.
+        "form-guard-fails-open-on-error",
+        FORMS,
+        '        return True, f"probe-failed:{type(exc).__name__}:{str(exc)[:60]}"',
+        '        return False, "probe-failed"',
+        "cdp_forms",
+        None,
+    ),
+    (
+        "form-guard-ignores-page-dirty-flag",
+        FORMS,
+        '        if value.get("dirty"):',
+        "        if False:",
+        "cdp_forms",
+        None,
+    ),
+    (
+        "form-guard-skipped-entirely",
+        CLOSE,
+        "    if not args.no_form_guard:",
+        "    if False:",
+        "form_guard",
         None,
     ),
     (

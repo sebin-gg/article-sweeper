@@ -958,6 +958,10 @@ class TabRecord:
     endpoint: str = ""          # e.g. "127.0.0.1:9224"
     browser: str = ""           # e.g. "chrome"
     canonical: str = field(default="")
+    # Needed by the dirty-form guard, which must speak CDP over WebSocket.
+    # Kept as a field rather than re-fetched so the close path uses the same
+    # snapshot it already revalidated.
+    ws_url: str = field(default="")
 
     def __post_init__(self):
         self.canonical = dedupe_key(self.url)
@@ -998,6 +1002,7 @@ def parse_cdp_list(data, *, endpoint: str = "", browser: str = "") -> list[TabRe
             continue
         out.append(TabRecord(
             id=tab_id, url=url, title=str(d.get("title", "") or ""),
+            ws_url=str(d.get("webSocketDebuggerUrl", "") or ""),
             type=str(ctype), endpoint=endpoint, browser=browser,
         ))
     return out

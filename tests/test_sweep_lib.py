@@ -916,12 +916,26 @@ def write_summary(path, urls):
 
 
 def _auto_summary(args):
-    """For cdp_close.py calls with no explicit --summary, authorize the whole
-    --expect snapshot. Mirrors a real sweep: every tab in the snapshot has
-    been summarized. Tests that exercise the gate pass --summary themselves.
+    """Fill in the two environment inputs every cdp_close test needs.
+
+    --summary: authorize the whole --expect snapshot, mirroring a real sweep
+    where every tab in the snapshot was summarized. Tests that exercise the
+    gate pass --summary themselves.
+
+    --no-form-guard: the fake CDP server publishes no webSocketDebuggerUrl, and
+    the dirty-form guard fails CLOSED, so without this every close would be
+    skipped and these tests would silently stop asserting anything. Tests for
+    the form guard opt back in explicitly.
     """
-    if "cdp_close.py" not in str(args) or "--summary" in args:
+    args = list(args)
+    if "cdp_close.py" not in str(args):
         return args
+    # "--form-guard" is an intent marker for tests that exercise the guard;
+    # it is stripped before the CLI sees it.
+    wants_guard = "--form-guard" in args
+    args = [a for a in args if a != "--form-guard"]
+    if not wants_guard and "--no-form-guard" not in args:
+        args += ["--no-form-guard"]
     try:
         i = args.index("--expect")
         dump = json.loads(Path(args[i + 1]).read_text(encoding="utf-8"))
@@ -930,7 +944,7 @@ def _auto_summary(args):
                 and t.get("url")]
     except Exception:
         return args
-    if not urls:
+    if not urls or "--summary" in args:
         return args
     s = Path(args[i + 1]).with_name("auto-summary.md")
     write_summary(s, urls)
@@ -2573,3 +2587,121 @@ def test_blocklist_and_summary_gate_both_apply(tmp_path):
         assert cdp.closed_puts == [], "neither tab may close"
         assert "never-close" in (r.stdout + r.stderr)
         assert "no schema-valid summary entry" in (r.stdout + r.stderr)
+
+
+# --- dirty-form guard, end to end through the CLI -------------------------
+
+@contextlib.contextmanager
+def _form_cli(tmp_path, dirty_ids, close_ids):
+    """Close candidates where the named tabs report unsaved input.
+
+    Each fake tab is backed by a real WebSocket server publishing a real
+    webSocketDebuggerUrl, so the guard exercises the actual socket path
+    rather than a mock.
+    """
+    from fake_ws import FakeWS
+
+    def dirty_reply(msg):
+        return {"id": msg.get("id"), "result": {"result": {"value": {
+            "dirty": True, "fields": ["input.text"]}}}}
+
+    def clean_reply(msg):
+        return {"id": msg.get("id"), "result": {"result": {"value": {
+            "dirty": False, "fields": []}}}}
+
+    tabs = {"A": "https://news.example/a",
+            "B": "https://news.example/b",
+            "C": "https://news.example/c",
+            "Z": "https://news.example/"}   # bystander for the last-page guard
+
+    with contextlib.ExitStack() as stack:
+        cdp_tabs = {}
+        for name, url in tabs.items():
+            reply = dirty_reply if name in dirty_ids else clean_reply
+            ws = stack.enter_context(FakeWS(reply))
+            cdp_tabs[name] = {"id": name, "type": "page", "url": url,
+                              "title": name, "webSocketDebuggerUrl": ws.url}
+        cdp = stack.enter_context(FakeCDP("Chrome/140.0.0.0", cdp_tabs))
+        exp = tmp_path / "expect.json"
+        cdp.dump_list(exp)
+        idf = tmp_path / "ids.txt"
+        idf.write_text("\n".join(close_ids) + "\n", encoding="utf-8")
+        summ = tmp_path / "summary.md"
+        write_summary(summ, list(tabs.values()))
+        r = run("cdp_close.py", str(idf), "--host", "127.0.0.1",
+                "--port", str(cdp.port), "--expect", str(exp),
+                "--browser", "chrome", "--summary", str(summ),
+                "--form-guard")
+        yield cdp, r
+
+
+def test_form_guard_skips_tab_with_unsaved_input(tmp_path):
+    with _form_cli(tmp_path, dirty_ids={"A"}, close_ids=["A", "B", "C"]) as (cdp, r):
+        assert "B" in cdp.closed_puts and "C" in cdp.closed_puts, (
+            "control tabs must close, or this test is void")
+        assert "A" not in cdp.closed_puts, "a dirty form must never be closed"
+        assert "A" in cdp.tabs
+        assert "unsaved-input" in (r.stdout + r.stderr)
+
+
+def test_form_guard_blocks_everything_when_all_dirty(tmp_path):
+    with _form_cli(tmp_path, dirty_ids={"A", "B", "C"},
+                   close_ids=["A", "B", "C"]) as (cdp, r):
+        assert cdp.closed_puts == [], "no dirty tab may close"
+        assert "unsaved input" in (r.stderr + r.stdout)
+
+
+def test_no_form_guard_flag_opts_out(tmp_path):
+    from fake_ws import FakeWS
+    import contextlib
+    tabs = {"A": "https://news.example/a", "Z": "https://news.example/"}
+
+    def dirty_reply(msg):
+        return {"id": msg.get("id"), "result": {"result": {"value": {
+            "dirty": True, "fields": ["textarea"]}}}}
+
+    with contextlib.ExitStack() as stack:
+        a = stack.enter_context(FakeWS(dirty_reply))
+        z = stack.enter_context(FakeWS(lambda m: {
+            "id": m.get("id"), "result": {"result": {"value": {
+                "dirty": False, "fields": []}}}}))
+        cdp = stack.enter_context(FakeCDP("Chrome/140.0.0.0", {
+            "A": {"id": "A", "type": "page", "url": tabs["A"], "title": "A",
+                  "webSocketDebuggerUrl": a.url},
+            "Z": {"id": "Z", "type": "page", "url": tabs["Z"], "title": "Z",
+                  "webSocketDebuggerUrl": z.url}}))
+        exp = tmp_path / "expect.json"
+        cdp.dump_list(exp)
+        idf = tmp_path / "ids.txt"
+        idf.write_text("A\n", encoding="utf-8")
+        summ = tmp_path / "summary.md"
+        write_summary(summ, list(tabs.values()))
+        r = run("cdp_close.py", str(idf), "--host", "127.0.0.1",
+                "--port", str(cdp.port), "--expect", str(exp),
+                "--browser", "chrome", "--summary", str(summ),
+                "--no-form-guard")
+        assert "A" not in cdp.tabs, "--no-form-guard must actually skip the probe"
+        assert r.returncode == 0, r.stderr + r.stdout
+
+
+def test_form_guard_fails_closed_without_websocket_url(tmp_path):
+    """A browser that does not publish ws URLs must block, not wave through."""
+    cdp = FakeCDP("Chrome/140.0.0.0", {
+        "A": {"id": "A", "type": "page", "url": "https://news.example/a",
+              "title": "A"},
+        "Z": {"id": "Z", "type": "page", "url": "https://news.example/",
+              "title": "Z"}})
+    with cdp:
+        exp = tmp_path / "expect.json"
+        cdp.dump_list(exp)
+        idf = tmp_path / "ids.txt"
+        idf.write_text("A\n", encoding="utf-8")
+        summ = tmp_path / "summary.md"
+        write_summary(summ, ["https://news.example/a", "https://news.example/"])
+        r = run("cdp_close.py", str(idf), "--host", "127.0.0.1",
+                "--port", str(cdp.port), "--expect", str(exp),
+                "--browser", "chrome", "--summary", str(summ),
+                "--form-guard")
+        assert "A" in cdp.tabs and cdp.closed_puts == [], (
+            "no ws url must fail closed")
+        assert "failing closed" in (r.stdout + r.stderr)
