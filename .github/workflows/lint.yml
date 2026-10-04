@@ -142,3 +142,31 @@ jobs:
             echo "- Result: ${{ job.status }}"
             echo "- Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           } >> $env:GITHUB_STEP_SUMMARY
+
+  test-linux-arm:
+    # Real aarch64 kernel. The sweep parses HTML and drives CDP; an ARM leg is
+    # what catches alignment and pointer-width assumptions an x86_64 run cannot.
+    # setup-python publishes aarch64 CPython wheels for every version in the
+    # matrix, so this stays a single-version smoke leg rather than a full
+    # version x arch matrix.
+    name: Test (Linux ARM64)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - name: Install test deps (hash-locked)
+        run: "pip install --only-binary=:all: --require-hashes -r requirements-ci.txt"
+      - name: Behavioral tests on Linux ARM64
+        run: python -m pytest tests/ -q
+      - name: ARM validation report
+        if: always()
+        run: |
+          {
+            echo "## Linux ARM64 validation"
+            echo "- Arch: \`$(uname -m)\`"
+            echo "- Kernel: \`$(uname -r)\`"
+            echo "- Python: \`$(python3 --version)\`"
+            echo "- Result: ${{ job.status }}"
+          } >> "$GITHUB_STEP_SUMMARY"
