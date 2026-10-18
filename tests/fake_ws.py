@@ -83,7 +83,7 @@ class FakeWS:
             conn.sendall(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
             return
         accept = base64.b64encode(
-            hashlib.sha1((key + GUID).encode()).digest()).decode()
+            hashlib.sha1((key + GUID).encode(), usedforsecurity=False).digest()).decode()
         if self.bad_accept:
             accept = "AAAAAAAAAAAAAAAAAAAAAAAAAAA="
         conn.sendall((
