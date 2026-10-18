@@ -94,11 +94,12 @@ def _without_timestamps(text):
     return json.dumps(doc, sort_keys=True)
 
 
-def test_index_matches_the_prose_file_exactly(tmp_path):
+def test_index_matches_the_prose_file_exactly(tmp_path, monkeypatch):
     """The two artifacts must never disagree about what was summarized."""
     specs = [{"title": "One", "link": "https://a.example/1", "tab_index": 1},
              {"title": "Two", "link": "https://b.example/2", "tab_index": 2}]
     _, _, doc = _run(tmp_path, specs)
+    monkeypatch.setenv("ARTICLE_SWEEPER_SCRATCH", str(tmp_path))
     parsed, problems = parse_summary_file(tmp_path / "summary.md")
     assert not problems, problems
     assert {e["canonical"] for e in doc["entries"]} == set(parsed), (

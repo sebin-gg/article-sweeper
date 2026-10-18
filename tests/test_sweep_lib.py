@@ -954,7 +954,16 @@ def _auto_summary(args):
 def run(script, *args):
     argv = [PY, str(SCRIPTS / script), *args]
     argv = _auto_summary(argv)
-    return subprocess.run(argv, capture_output=True, text=True, timeout=60)
+    env = os.environ.copy()
+    if script == "cdp_close.py":
+        try:
+            expect_index = argv.index("--expect")
+            env["ARTICLE_SWEEPER_SCRATCH"] = str(
+                Path(argv[expect_index + 1]).resolve().parent)
+        except (ValueError, IndexError):
+            pass
+    return subprocess.run(argv, capture_output=True, text=True, timeout=60,
+                          env=env)
 
 
 def test_list_cli_rejects_malformed(tmp_path):
@@ -2269,7 +2278,7 @@ def test_gate_accepts_documented_paywall_entry(tmp_path):
     assert link == "https://ex.com/a"
 
 
-def test_duplicate_summary_link_is_reported(tmp_path):
+def test_duplicate_summary_link_is_reported(tmp_path, monkeypatch):
     # Same article written two ways that canonicalize alike (case + default
     # port + fragment). Note `utm=` would NOT collapse: query params are
     # significant by design, only known tracking params are dropped.
@@ -2278,8 +2287,36 @@ def test_duplicate_summary_link_is_reported(tmp_path):
            "Takeaway: t\n---\n")
     p = tmp_path / "s.md"
     p.write_text(raw, encoding="utf-8")
+    monkeypatch.setenv("ARTICLE_SWEEPER_SCRATCH", str(tmp_path))
     index, problems = sweep_lib.parse_summary_file(p)
     assert len(index) == 1 and any("duplicate" in x for x in problems)
+
+
+def test_summary_path_rejects_parent_traversal(tmp_path, monkeypatch):
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setenv("ARTICLE_SWEEPER_SCRATCH", str(scratch))
+
+    index, problems = sweep_lib.parse_summary_file(tmp_path / "outside.md")
+
+    assert not index
+    assert problems == ["summary file path is outside Desktop or SCRATCH"]
+
+
+def test_summary_path_rejects_symlink_escape(tmp_path, monkeypatch):
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setenv("ARTICLE_SWEEPER_SCRATCH", str(scratch))
+    escape = scratch / "escape"
+    try:
+        escape.symlink_to(Path.home(), target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("directory symlinks are unavailable")
+
+    index, problems = sweep_lib.parse_summary_file(escape / "summary.md")
+
+    assert not index
+    assert problems == ["summary file path is outside Desktop or SCRATCH"]
 
 
 # --- readability pass, page-title recovery, challenge detection ------------
