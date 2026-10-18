@@ -136,7 +136,7 @@ def ws_connect(url: str, timeout: float = 5.0) -> socket.socket:
         # WebSocket endpoint rather than a plain HTTP server.
         # nosemgrep: python.security.hashlib.insecure-hash-algorithm
         expect = base64.b64encode(hashlib.sha1(  # noqa: S324
-            (key + WS_GUID).encode("ascii")).digest()).decode("ascii")
+            (key + WS_GUID).encode("ascii"), usedforsecurity=False).digest()).decode("ascii")
         got = ""
         for line in head.split("\r\n")[1:]:
             if line.lower().startswith("sec-websocket-accept:"):
