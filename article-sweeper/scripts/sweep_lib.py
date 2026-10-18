@@ -1616,6 +1616,26 @@ def validate_summary_entry(text: str) -> tuple[bool, list[str], str]:
     return (not problems), problems, link
 
 
+def _approved_summary_roots() -> tuple[Path, ...]:
+    """Return the only directories from which a close gate may read summaries."""
+    configured_scratch = os.environ.get("ARTICLE_SWEEPER_SCRATCH")
+    scratch = (Path(configured_scratch) if configured_scratch
+               else Path(tempfile.gettempdir()) / "opencode")
+    return (Path.home() / "Desktop", scratch)
+
+
+def _safe_summary_path(path: Path) -> Path:
+    """Resolve a summary path and reject traversal or symlink escapes."""
+    candidate = Path(path).expanduser().resolve(strict=False)
+    for root in _approved_summary_roots():
+        try:
+            candidate.relative_to(root.expanduser().resolve(strict=False))
+            return candidate
+        except ValueError:
+            continue
+    raise ValueError("summary file must be under Desktop or SCRATCH")
+
+
 def parse_summary_file(path: Path) -> tuple[dict[str, dict], list[str]]:
     """Parse the summary file into {canonical_url: entry} plus problems.
 
@@ -1625,7 +1645,10 @@ def parse_summary_file(path: Path) -> tuple[dict[str, dict], list[str]]:
     tab's own URL still matches -- which is the point of canonicalising both
     sides rather than comparing strings.
     """
-    p = Path(path)
+    try:
+        p = _safe_summary_path(Path(path))
+    except (OSError, RuntimeError, ValueError):
+        return {}, ["summary file path is outside Desktop or SCRATCH"]
     try:
         text = p.read_text(encoding="utf-8")
     except FileNotFoundError:

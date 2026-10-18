@@ -4,7 +4,7 @@ description: Summarize open article tabs in Thorium, Chromium, Chrome, Brave, Ed
 license: MIT
 allowed-tools: Bash Read Edit Write Task WebFetch WebSearch
 metadata:
-  version: "1.19.0"
+  version: "1.20.0"
   tags: "browser,tabs,summarize,thorium,chromium,firefox"
 ---
 
@@ -38,8 +38,8 @@ identity check, atomic append, redaction). Use it — do not reimplement
 its rules in prose.
 
 Scratch dir: `/tmp/opencode` Linux/macOS. Windows: `%TEMP%\opencode`
-(Git Bash: `/tmp/opencode` also works). Read every `/tmp/opencode` path
-below as `$SCRATCH` on Windows.
+(Git Bash: `/tmp/opencode` also works). Set `ARTICLE_SWEEPER_SCRATCH` to
+override it. Read every `/tmp/opencode` path below as `$SCRATCH` on Windows.
 
 Desktop file: `~/Desktop/` Linux/macOS. Windows: `$USERPROFILE\Desktop\`.
 Same `summary article YYYY-MM-DD.txt` basename all systems.
@@ -647,6 +647,10 @@ no `Link:` or a `javascript:` one. Matching is on the canonical URL, so a
 `Link:` written in a cleaner form than the tab's own URL still matches.
 An empty or missing summary refuses the whole run, and every skip is
 reported.
+
+The close gate reads summary files only beneath Desktop or the configured
+scratch directory. It resolves symlinks before checking the path and rejects
+paths outside either directory.
 
 This is the invariant that makes the sweep self-auditing: the summary file
 stops being a report and becomes the authorization record. Every close is

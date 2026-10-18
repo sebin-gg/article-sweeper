@@ -5,6 +5,8 @@ semver and match `metadata.version` in SKILL.md frontmatter.
 
 ## [Unreleased]
 
+## [1.20.0] - 2026-10-18
+
 Added:
 
 - Readability pass before any search fallback (`extract_readable`): structural
@@ -35,6 +37,8 @@ Changed:
 
 Fixed:
 
+- The close gate resolves `--summary` and permits reads only below Desktop or
+  the configured scratch directory, rejecting traversal and symlink escapes.
 - macOS process-ownership proof fails closed. `_darwin_listening_pids` parsed
   `lsof` stdout without inspecting its exit code or stderr, so a failed query
   (binary missing, not permitted) returned `[]` — indistinguishable from "no
@@ -45,6 +49,9 @@ Fixed:
 
 Tests:
 
+- `test_summary_path_rejects_parent_traversal` and
+  `test_summary_path_rejects_symlink_escape` cover rejected paths; CLI tests
+  exercise valid files in scratch.
 - `test_darwin_listening_pids_query_failure_does_not_look_empty` covers a
   non-zero exit with a stderr message, a hard failure exit, and a stderr
   message alongside otherwise-parseable output. Verified it fails against the
