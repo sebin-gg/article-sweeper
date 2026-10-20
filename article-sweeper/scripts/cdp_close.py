@@ -224,11 +224,11 @@ def main(argv=None):
     # Trust boundary: local-operator CLI tool. argv paths come from the
     # invoking operator (same trust as shell redirection) and are
     # validated (is-file checks above) before reading. The NOSONAR marks
-    # below record reviewed S8707 findings, not blind suppression.
+    # below record reviewed S8707 trust-boundary exceptions.
     ids_path = Path(args.ids_file)
     if not ids_path.is_file():
         raise SystemExit(f"not a file: {args.ids_file}")
-    with open(ids_path, encoding="utf-8") as fh:  # NOSONAR pythonsecurity:S8707
+    with open(ids_path, encoding="utf-8") as fh:  # NOSONAR
         ids = [ln.strip() for ln in fh if ln.strip()]
     if not ids:
         raise SystemExit("no tab ids in file; refusing empty close run")
@@ -239,7 +239,7 @@ def main(argv=None):
     ep = Path(args.expect)
     if not ep.is_file():
         raise SystemExit(f"not a file: {args.expect}")
-    with open(ep, encoding="utf-8") as fh:  # NOSONAR pythonsecurity:S8707
+    with open(ep, encoding="utf-8") as fh:  # NOSONAR
         before = parse_cdp_list(json.load(fh), endpoint=endpoint,
                                 browser=args.browser)
     # refresh live list for the identity check
