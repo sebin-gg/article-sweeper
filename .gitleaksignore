@@ -1,0 +1,2 @@
+# Test-only JWT fixture in tests/test_sweep_lib.py; not a production credential.
+43bdb0cbb662521b003bc97b31f2591bdbd4cd70:tests/test_sweep_lib.py:jwt:107
